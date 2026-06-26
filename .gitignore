@@ -1,0 +1,31 @@
+# ai-sandbox/
+CommitMsg-draft.md
+ReleaseNotes-draft.md
+
+# Binaries (root only, not cmd/dkmcp/)
+/dkmcp
+/dkmcp.exe
+dist/
+
+# Config files (keep example only)
+dkmcp.yaml
+*.local.yaml
+
+# Logs
+*.log
+
+# Go
+*.test
+*.out
+vendor/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
