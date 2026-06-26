@@ -16,6 +16,9 @@ For the AI Sandbox template that uses HostMCP, see [ai-sandbox](https://github.c
 - [Installation](#installation)
 - [Server Startup](#server-startup)
 - [Connecting AI Assistants](#connecting-ai-assistants)
+  - [Pattern A: With ai-sandbox template](#pattern-a-with-ai-sandbox-template)
+  - [Pattern B: Any DevContainer](#pattern-b-any-devcontainer-without-ai-sandbox)
+  - [Pattern C: Claude Desktop](#pattern-c-claude-desktop-and-other-desktop-ai-apps)
 - [CLI Commands](#cli-commands)
   - [Setup Commands](#setup-commands)
   - [Host OS Commands (Direct Docker Access)](#host-os-commands-direct-docker-access)
@@ -214,9 +217,69 @@ hostmcp serve --port 8081 --config strict.yaml
 
 ## Connecting AI Assistants
 
-For MCP configuration steps inside AI Sandbox, see [ai-sandbox](https://github.com/YujiSuzuki/ai-sandbox).
+HostMCP works with any MCP-compatible AI client. Choose the pattern that fits your setup.
 
-After configuration, AI assistants can access containers:
+### Pattern A: With ai-sandbox template
+
+The [ai-sandbox](https://github.com/YujiSuzuki/ai-sandbox) template handles MCP registration automatically via `setup-hostmcp.sh`. See the ai-sandbox README for details.
+
+### Pattern B: Any DevContainer (without ai-sandbox)
+
+HostMCP works with any existing DevContainer — no special template required.
+
+**1. Start HostMCP on the host OS**
+```bash
+hostmcp init --workspace /path/to/your-project
+hostmcp serve --config /path/to/your-project/.sandbox/config/hostmcp.yaml
+```
+
+**2. Register inside the DevContainer**
+```bash
+# Claude Code
+claude mcp add --transport sse --scope user hostmcp \
+  http://host.docker.internal:18080/sse
+
+# Gemini CLI
+gemini mcp add --transport sse hostmcp \
+  http://host.docker.internal:18080/sse
+```
+
+**3. Reconnect**
+
+In Claude Code: `/mcp` → "Reconnect"
+
+> `host.docker.internal` resolves to the host OS from inside any Docker container (Docker Desktop / OrbStack). No extra configuration needed.
+
+### Pattern C: Claude Desktop (and other desktop AI apps)
+
+Claude Desktop can only reach external tools via MCP — it cannot run `docker` commands directly. HostMCP fills that gap.
+
+**1. Start HostMCP on the host OS** (same as above)
+
+**2. Add to Claude Desktop**
+
+Open Claude Desktop settings → MCP Servers → Add server:
+
+```json
+{
+  "mcpServers": {
+    "hostmcp": {
+      "url": "http://localhost:18080/sse"
+    }
+  }
+}
+```
+
+Or via CLI:
+```bash
+claude mcp add --transport sse hostmcp http://localhost:18080/sse
+```
+
+> Use `localhost` (not `host.docker.internal`) since Claude Desktop runs on the host OS directly.
+
+---
+
+Once connected, AI assistants can access your containers:
 
 ```
 User: "Check the myapp-api container logs"

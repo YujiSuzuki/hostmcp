@@ -16,6 +16,9 @@ HostMCP を使用する AI Sandbox テンプレートについては [ai-sandbox
 - [インストール](#インストール)
 - [サーバー起動](#サーバー起動)
 - [AIアシスタントとの接続](#aiアシスタントとの接続)
+  - [パターン A: ai-sandbox テンプレートを使う場合](#パターン-a-ai-sandbox-テンプレートを使う場合)
+  - [パターン B: 任意の DevContainer](#パターン-b-任意の-devcontainer-で使う場合ai-sandbox-なし)
+  - [パターン C: Claude Desktop など](#パターン-c-claude-desktop-などのデスクトップ-ai-アプリ)
 - [CLIコマンド](#cliコマンド)
   - [セットアップコマンド](#セットアップコマンド)
   - [ホストOSコマンド（直接Dockerアクセス）](#ホストosコマンド直接dockerアクセス)
@@ -214,16 +217,76 @@ hostmcp serve --port 8081 --config strict.yaml
 
 ## AIアシスタントとの接続
 
-AI Sandbox 内での MCP 設定手順は [ai-sandbox](https://github.com/YujiSuzuki/ai-sandbox) を参照してください。
+HostMCP は MCP に対応した任意の AI クライアントと連携できます。環境に合わせたパターンを選んでください。
 
-設定後、AIアシスタントがコンテナにアクセスできるようになります:
+### パターン A: ai-sandbox テンプレートを使う場合
+
+[ai-sandbox](https://github.com/YujiSuzuki/ai-sandbox) テンプレートを使うと、`setup-hostmcp.sh` で MCP 登録が自動化されます。詳細は ai-sandbox の README を参照してください。
+
+### パターン B: 任意の DevContainer で使う場合（ai-sandbox なし）
+
+既存の DevContainer にそのまま導入できます。テンプレートの移行は不要です。
+
+**1. ホスト OS で HostMCP を起動**
+```bash
+hostmcp init --workspace /path/to/your-project
+hostmcp serve --config /path/to/your-project/.sandbox/config/hostmcp.yaml
+```
+
+**2. DevContainer 内で MCP サーバーを登録**
+```bash
+# Claude Code
+claude mcp add --transport sse --scope user hostmcp \
+  http://host.docker.internal:18080/sse
+
+# Gemini CLI
+gemini mcp add --transport sse hostmcp \
+  http://host.docker.internal:18080/sse
+```
+
+**3. 再接続**
+
+Claude Code の場合: `/mcp` → 「Reconnect」を選択
+
+> `host.docker.internal` は Docker Desktop / OrbStack 環境であれば、コンテナ内から自動的にホスト OS に解決されます。追加設定は不要です。
+
+### パターン C: Claude Desktop などのデスクトップ AI アプリ
+
+Claude Desktop は MCP 経由でしか外部ツールにアクセスできないため、`docker` コマンドを直接実行できません。HostMCP がそのギャップを埋めます。
+
+**1. ホスト OS で HostMCP を起動**（上記と同じ）
+
+**2. Claude Desktop に追加**
+
+Claude Desktop の設定 → MCP サーバー → サーバーを追加:
+
+```json
+{
+  "mcpServers": {
+    "hostmcp": {
+      "url": "http://localhost:18080/sse"
+    }
+  }
+}
+```
+
+または CLI で:
+```bash
+claude mcp add --transport sse hostmcp http://localhost:18080/sse
+```
+
+> Claude Desktop はホスト OS 上で直接動作するため、`host.docker.internal` ではなく `localhost` を使います。
+
+---
+
+接続後、AI アシスタントがコンテナにアクセスできるようになります:
 
 ```
-ユーザー: "myapp-apiコンテナのログを確認して"
-Claude: [HostMCPを使用] "ログに500エラーが見えます..."
+ユーザー: "myapp-api コンテナのログを確認して"
+Claude: [HostMCP を使用] "ログに 500 エラーが見えます..."
 
-ユーザー: "APIコンテナでテストを実行して"
-Claude: [HostMCPを使用] "npm testを実行中... 3つのテストが通過"
+ユーザー: "API コンテナでテストを実行して"
+Claude: [HostMCP を使用] "npm test を実行中... 3 つのテストが通過"
 ```
 
 ## CLIコマンド
