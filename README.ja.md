@@ -2,9 +2,9 @@
 
 [English README is here](README.md)
 
-**AIコーディングアシスタントのための安全なDockerコンテナアクセス**
+**AI エージェントのためのホスト OS への制御されたアクセス（MCP 経由）**
 
-HostMCPは、ホストOS上で動作し、AI Sandbox内のAIアシスタント（Claude Code、Gemini Code Assistなど）が他のDockerコンテナのログ確認やテスト実行を安全に行えるようにするMCPサーバーです。
+HostMCP は、ホスト OS 上で動作する MCP サーバーです。AI Sandbox 内の AI アシスタント（Claude Code、Gemini Code Assist など）が、Docker コンテナ・ホストツール・ホスト OS コマンドといったホスト環境全体に、セキュリティポリシーに基づいて安全にアクセスできるようにします。
 
 HostMCP を使用する AI Sandbox テンプレートについては [ai-sandbox](https://github.com/YujiSuzuki/ai-sandbox) を参照してください。
 
@@ -40,12 +40,14 @@ HostMCP を使用する AI Sandbox テンプレートについては [ai-sandbox
 
 ## 機能
 
-- 🔒 **セキュリティ第一の設計** - ホワイトリストベースのコンテナとコマンドアクセス
-- 🤖 **マルチAIサポート** - Claude Code、Gemini Code Assistで動作
-- 🚀 **依存関係ゼロ** - 単一バイナリ、ランタイム要件なし
-- 🌐 **クロスプラットフォーム** - Windows、macOS（Intel & Apple Silicon）、Linux
-- 📝 **監査ログ** - コンプライアンス対応のため全操作を記録可能
-- ⚡ **MCP標準** - 将来の拡張性を見据えてMCPを採用
+- 🐳 **Docker コンテナアクセス** — ログ取得・コマンド実行・inspect・stats・ライフサイクル管理（起動/停止/再起動）
+- 🔧 **ホストツール実行** — `.sandbox/host-tools/` の承認済みスクリプトを人のレビュー付きで実行
+- 💻 **ホスト OS コマンド** — ホワイトリスト登録された CLI コマンドをホスト OS 上で実行
+- 🔒 **セキュリティ第一の設計** — ホワイトリストベースのアクセス制御・出力マスキング・パスブロック
+- 🤖 **マルチ AI サポート** — Claude Code、Gemini Code Assist で動作
+- 🚀 **依存関係ゼロ** — 単一バイナリ、ランタイム要件なし
+- 🌐 **クロスプラットフォーム** — Windows、macOS（Intel & Apple Silicon）、Linux
+- 📝 **監査ログ** — コンプライアンス対応のため全操作を記録可能
 
 ## インストール
 

@@ -2,9 +2,9 @@
 
 [日本語版はこちら](README.ja.md)
 
-**Secure Docker Container Access for AI Coding Assistants**
+**Controlled Host OS Access for AI Agents via MCP**
 
-HostMCP is an MCP server that runs on the host OS, enabling AI assistants (Claude Code, Gemini Code Assist, etc.) inside an AI Sandbox to safely check logs and run tests in other Docker containers.
+HostMCP is an MCP server that runs on the host OS, giving AI assistants (Claude Code, Gemini Code Assist, etc.) inside an AI Sandbox controlled access to the host environment — Docker containers, host tools, and host OS commands — through configurable security policies.
 
 For the AI Sandbox template that uses HostMCP, see [ai-sandbox](https://github.com/YujiSuzuki/ai-sandbox).
 
@@ -40,12 +40,14 @@ For the AI Sandbox template that uses HostMCP, see [ai-sandbox](https://github.c
 
 ## Features
 
-- **Security-first design** — Whitelist-based container and command access
-- **Multi-AI support** — Works with Claude Code, Gemini Code Assist
-- **Zero dependencies** — Single binary, no runtime requirements
-- **Cross-platform** — Windows, macOS (Intel & Apple Silicon), Linux
-- **Audit logging** — All operations can be logged for compliance
-- **MCP standard** — Built on MCP for future extensibility
+- 🐳 **Docker container access** — Logs, exec, inspect, stats, lifecycle (start/stop/restart)
+- 🔧 **Host tool execution** — Run approved scripts in `.sandbox/host-tools/` with a human approval workflow
+- 💻 **Host OS commands** — Execute whitelisted CLI commands on the host OS
+- 🔒 **Security-first design** — Whitelist-based access control, output masking, blocked paths
+- 🤖 **Multi-AI support** — Works with Claude Code, Gemini Code Assist
+- 🚀 **Zero dependencies** — Single binary, no runtime requirements
+- 🌐 **Cross-platform** — Windows, macOS (Intel & Apple Silicon), Linux
+- 📝 **Audit logging** — All operations can be logged for compliance
 
 ## Installation
 
