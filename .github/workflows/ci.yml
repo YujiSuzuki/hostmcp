@@ -15,4 +15,4 @@ jobs:
         with:
           go-version-file: go.mod
       - run: go test ./...
-      - run: go build ./cmd/dkmcp
+      - run: go build ./cmd/hostmcp
