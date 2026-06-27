@@ -11,18 +11,18 @@ LDFLAGS := -ldflags="-X 'github.com/YujiSuzuki/hostmcp/internal/cli.Version=${VE
 # 現在のプラットフォーム向けにビルド
 build:
 	@echo "Building hostmcp version ${VERSION}..."
-	CGO_ENABLED=0 go build ${LDFLAGS} -o hostmcp ./cmd/hostmcp
+	CGO_ENABLED=0 go build ${LDFLAGS} -o hostmcp .
 
 # Build for all platforms
 # 全プラットフォーム向けにビルド（クロスコンパイル）
 build-all:
 	@echo "Building hostmcp version ${VERSION} for all platforms..."
 	mkdir -p dist
-	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build ${LDFLAGS} -o dist/hostmcp_windows_amd64.exe ./cmd/hostmcp
-	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build ${LDFLAGS} -o dist/hostmcp_darwin_arm64 ./cmd/hostmcp
-	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build ${LDFLAGS} -o dist/hostmcp_darwin_amd64 ./cmd/hostmcp
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build ${LDFLAGS} -o dist/hostmcp_linux_amd64 ./cmd/hostmcp
-	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build ${LDFLAGS} -o dist/hostmcp_linux_arm64 ./cmd/hostmcp
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build ${LDFLAGS} -o dist/hostmcp_windows_amd64.exe .
+	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build ${LDFLAGS} -o dist/hostmcp_darwin_arm64 .
+	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build ${LDFLAGS} -o dist/hostmcp_darwin_amd64 .
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build ${LDFLAGS} -o dist/hostmcp_linux_amd64 .
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build ${LDFLAGS} -o dist/hostmcp_linux_arm64 .
 
 # Cross-build for the host OS
 # ホストOS向けクロスビルド
@@ -43,7 +43,7 @@ DEST ?= dist
 build-host:
 	@echo "Building hostmcp version ${VERSION} for ${HOST_OS}/${HOST_ARCH}..."
 	mkdir -p dist
-	CGO_ENABLED=0 GOOS=${HOST_OS} GOARCH=${HOST_ARCH} go build ${LDFLAGS} -o dist/hostmcp_${HOST_OS}_${HOST_ARCH} ./cmd/hostmcp
+	CGO_ENABLED=0 GOOS=${HOST_OS} GOARCH=${HOST_ARCH} go build ${LDFLAGS} -o dist/hostmcp_${HOST_OS}_${HOST_ARCH} .
 	@echo "✓ Built: dist/hostmcp_${HOST_OS}_${HOST_ARCH}"
 
 # Install cross-built binary to host OS (run on host OS)
@@ -98,11 +98,11 @@ test-mcp:
 install:
 ifdef DEVCONTAINER
 	@mkdir -p /home/node/.local/bin
-	@CGO_ENABLED=0 go build ${LDFLAGS} -o /home/node/.local/bin/hostmcp ./cmd/hostmcp
+	@CGO_ENABLED=0 go build ${LDFLAGS} -o /home/node/.local/bin/hostmcp .
 	@echo "✓ Installed to /home/node/.local/bin/hostmcp"
 	@echo "  (persisted in DevContainer volume)"
 else
-	CGO_ENABLED=0 go install ${LDFLAGS} ./cmd/hostmcp
+	CGO_ENABLED=0 go install ${LDFLAGS} .
 	@echo "✓ Installed to $$GOPATH/bin/hostmcp"
 endif
 
@@ -113,12 +113,12 @@ endif
 # Requires a config file. If not yet created, run: make init
 # 設定ファイルが必要です。未作成の場合は先に: make init
 run:
-	go run ./cmd/hostmcp serve --workspace .
+	go run . serve --workspace .
 
 # Generate config file from built-in template
 # 組み込みテンプレートから設定ファイルを生成
 init:
-	go run ./cmd/hostmcp init --workspace .
+	go run . init --workspace .
 
 # Format code
 # コードをフォーマット
