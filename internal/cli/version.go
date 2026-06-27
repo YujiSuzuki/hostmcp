@@ -7,6 +7,7 @@ package cli
 
 import (
 	"fmt"
+	"runtime/debug"
 
 	"github.com/spf13/cobra"
 )
@@ -21,6 +22,18 @@ import (
 // go build -ldflags "-X github.com/YujiSuzuki/hostmcp/internal/cli.Version=1.0.0"
 // デフォルト値"dev"は開発ビルドを示します。
 var Version = "dev"
+
+// init resolves the version from module build info when not set via ldflags.
+// This ensures `go install` users see the correct version (e.g. "v0.2.0")
+// instead of the default "dev".
+func init() {
+	if Version == "dev" {
+		if info, ok := debug.ReadBuildInfo(); ok &&
+			info.Main.Version != "" && info.Main.Version != "(devel)" {
+			Version = info.Main.Version
+		}
+	}
+}
 
 // versionCmd represents the 'version' command.
 // It prints the version number and exits.
