@@ -7,10 +7,13 @@ package audit
 
 import (
 	"context"
-	"io"
+	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/YujiSuzuki/hostmcp/internal/config"
@@ -99,57 +102,151 @@ type Logger struct {
 	logger *slog.Logger
 	mu     sync.Mutex
 	file   *os.File
+	closed bool
 }
 
 var (
-	globalLogger *Logger
-	once         sync.Once
+	globalLogger atomic.Pointer[Logger]
+	initMu       sync.Mutex
+	initialized  bool
 )
 
 // Initialize sets up the global audit logger.
+// Idempotent: subsequent calls are no-ops and return nil.
+//
 // InitializeはグローバルAuditロガーを設定します。
+// 冪等: 2回目以降の呼び出しは何もせずnilを返します。
 func Initialize(cfg config.AuditConfig) error {
-	var initErr error
-	once.Do(func() {
-		logger, err := newLogger(cfg)
-		if err != nil {
-			initErr = err
-			return
+	initMu.Lock()
+	defer initMu.Unlock()
+	if initialized {
+		return nil
+	}
+	logger, err := newLogger(cfg)
+	if err != nil {
+		return err
+	}
+	globalLogger.Store(logger)
+	initialized = true
+	return nil
+}
+
+// expandPath expands "~/" prefix to the user's home directory.
+// expandPathは"~/"プレフィックスをユーザーのホームディレクトリに展開します。
+func expandPath(path string) (string, error) {
+	if !strings.HasPrefix(path, "~/") {
+		return path, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("failed to get home directory: %w", err)
+	}
+	return filepath.Join(home, path[2:]), nil
+}
+
+// rotateFile rotates the log file at path, keeping up to keep old copies.
+// Old files are named path.1, path.2, ... path.keep (oldest is deleted).
+//
+// rotateFileはpathのログファイルをローテーションし、最大keep件の古いコピーを保持します。
+// 古いファイルはpath.1, path.2, ... path.keepと命名されます（最も古いものは削除）。
+func rotateFile(path string, keep int) error {
+	if keep <= 0 {
+		return nil
+	}
+	// Remove oldest file beyond keep limit; fail early if it exists but can't be removed.
+	// keep件を超えた最も古いファイルを削除。存在するのに削除できない場合は早期リターン。
+	oldest := fmt.Sprintf("%s.%d", path, keep)
+	if err := os.Remove(oldest); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to remove oldest log %s: %w", oldest, err)
+	}
+
+	// Shift existing rotated files: .N-1 → .N
+	// 既存のローテーションファイルをシフト: .N-1 → .N
+	for i := keep - 1; i >= 1; i-- {
+		src := fmt.Sprintf("%s.%d", path, i)
+		dst := fmt.Sprintf("%s.%d", path, i+1)
+		if _, err := os.Stat(src); os.IsNotExist(err) {
+			continue
+		} else if err != nil {
+			return fmt.Errorf("failed to stat %s: %w", src, err)
 		}
-		globalLogger = logger
-	})
-	return initErr
+		if err := renameOrCopy(src, dst); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return fmt.Errorf("failed to rotate %s → %s: %w", src, dst, err)
+		}
+	}
+
+	// Rename current log to .1
+	// 現在のログを.1にリネーム
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		// nothing to rotate
+	} else if err != nil {
+		return fmt.Errorf("failed to stat %s: %w", path, err)
+	} else if err := renameOrCopy(path, path+".1"); err != nil {
+		return fmt.Errorf("failed to rotate %s → %s.1: %w", path, path, err)
+	}
+	return nil
 }
 
 // newLogger creates a new audit logger.
 // newLoggerは新しい監査ロガーを作成します。
 func newLogger(cfg config.AuditConfig) (*Logger, error) {
-	l := &Logger{cfg: cfg}
-
-	var output io.Writer = os.Stdout
-	if cfg.File != "" {
-		f, err := os.OpenFile(cfg.File, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if err != nil {
-			return nil, err
-		}
-		l.file = f
-		output = f
+	if cfg.File == "" {
+		return nil, fmt.Errorf("audit.file must be set when audit logging is enabled")
 	}
 
-	l.logger = slog.New(slog.NewJSONHandler(output, &slog.HandlerOptions{
+	l := &Logger{cfg: cfg}
+
+	filePath, err := expandPath(cfg.File)
+	if err != nil {
+		return nil, err
+	}
+	cfg.File = filePath
+	l.cfg.File = filePath
+
+	if err := os.MkdirAll(filepath.Dir(filePath), 0755); err != nil {
+		return nil, fmt.Errorf("failed to create audit log directory: %w", err)
+	}
+
+	if err := rotateFile(filePath, cfg.Rotation.Keep); err != nil {
+		return nil, err
+	}
+
+	f, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open audit log %s: %w", filePath, err)
+	}
+	l.file = f
+
+	l.logger = slog.New(slog.NewJSONHandler(f, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	}))
 
 	return l, nil
 }
 
-// Close closes the audit logger.
-// Closeは監査ロガーをクローズします。
+// Close closes the audit logger. Safe to call multiple times.
+// Closeは監査ロガーをクローズします。複数回呼び出し可能です。
 func (l *Logger) Close() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.closed {
+		return nil
+	}
+	l.closed = true
 	if l.file != nil {
 		return l.file.Close()
 	}
 	return nil
+}
+
+// FilePath returns the resolved (expanded) path of the audit log file.
+//
+// FilePathは監査ログファイルの展開済みパスを返します。
+func (l *Logger) FilePath() string {
+	return l.cfg.File
 }
 
 // Log records an audit event.
@@ -167,6 +264,9 @@ func (l *Logger) Log(ctx context.Context, event Event) {
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.closed {
+		return
+	}
 
 	attrs := []any{
 		slog.String("event_type", string(event.Type)),
@@ -220,10 +320,11 @@ func (l *Logger) shouldLog(eventType EventType) bool {
 // LogToolCall logs a tool invocation.
 // LogToolCallはツール呼び出しをログ記録します。
 func LogToolCall(ctx context.Context, tool, container string, result Result, durationMs int64, details map[string]any) {
-	if globalLogger == nil {
+	l := globalLogger.Load()
+	if l == nil {
 		return
 	}
-	globalLogger.Log(ctx, Event{
+	l.Log(ctx, Event{
 		Type:       EventToolCall,
 		Tool:       tool,
 		Container:  container,
@@ -236,10 +337,11 @@ func LogToolCall(ctx context.Context, tool, container string, result Result, dur
 // LogAccessDenied logs an access denial.
 // LogAccessDeniedはアクセス拒否をログ記録します。
 func LogAccessDenied(ctx context.Context, tool, container, reason string, details map[string]any) {
-	if globalLogger == nil {
+	l := globalLogger.Load()
+	if l == nil {
 		return
 	}
-	globalLogger.Log(ctx, Event{
+	l.Log(ctx, Event{
 		Type:         EventAccessDenied,
 		Tool:         tool,
 		Container:    container,
@@ -252,10 +354,11 @@ func LogAccessDenied(ctx context.Context, tool, container, reason string, detail
 // LogClientConnect logs a client connection.
 // LogClientConnectはクライアント接続をログ記録します。
 func LogClientConnect(ctx context.Context, clientName, sessionID string) {
-	if globalLogger == nil {
+	l := globalLogger.Load()
+	if l == nil {
 		return
 	}
-	globalLogger.Log(ctx, Event{
+	l.Log(ctx, Event{
 		Type:       EventClientConnect,
 		ClientName: clientName,
 		SessionID:  sessionID,
@@ -266,10 +369,11 @@ func LogClientConnect(ctx context.Context, clientName, sessionID string) {
 // LogClientDisconnect logs a client disconnection.
 // LogClientDisconnectはクライアント切断をログ記録します。
 func LogClientDisconnect(ctx context.Context, clientName, sessionID string, durationMs int64) {
-	if globalLogger == nil {
+	l := globalLogger.Load()
+	if l == nil {
 		return
 	}
-	globalLogger.Log(ctx, Event{
+	l.Log(ctx, Event{
 		Type:       EventClientDisconnect,
 		ClientName: clientName,
 		SessionID:  sessionID,
@@ -281,10 +385,11 @@ func LogClientDisconnect(ctx context.Context, clientName, sessionID string, dura
 // LogSecurityPolicy logs a security policy query.
 // LogSecurityPolicyはセキュリティポリシー照会をログ記録します。
 func LogSecurityPolicy(ctx context.Context, tool string, details map[string]any) {
-	if globalLogger == nil {
+	l := globalLogger.Load()
+	if l == nil {
 		return
 	}
-	globalLogger.Log(ctx, Event{
+	l.Log(ctx, Event{
 		Type:    EventSecurityPolicy,
 		Tool:    tool,
 		Result:  ResultSuccess,
@@ -301,21 +406,32 @@ func MeasureDuration(start time.Time) int64 {
 // GetLogger returns the global audit logger for testing.
 // GetLoggerはテスト用にグローバルAuditロガーを返します。
 func GetLogger() *Logger {
-	return globalLogger
+	return globalLogger.Load()
 }
 
 // SetLogger sets the global audit logger (for testing).
+// It closes any existing logger and updates the initialized flag accordingly.
+//
 // SetLoggerはグローバルAuditロガーを設定します（テスト用）。
+// 既存ロガーをクローズし、initializedフラグも合わせて更新します。
 func SetLogger(l *Logger) {
-	globalLogger = l
+	initMu.Lock()
+	defer initMu.Unlock()
+	if existing := globalLogger.Load(); existing != nil {
+		existing.Close()
+	}
+	globalLogger.Store(l)
+	initialized = (l != nil)
 }
 
 // ResetLogger resets the global audit logger (for testing).
 // ResetLoggerはグローバルAuditロガーをリセットします（テスト用）。
 func ResetLogger() {
-	if globalLogger != nil {
-		globalLogger.Close()
+	initMu.Lock()
+	defer initMu.Unlock()
+	if l := globalLogger.Load(); l != nil {
+		l.Close()
 	}
-	globalLogger = nil
-	once = sync.Once{}
+	globalLogger.Store(nil)
+	initialized = false
 }

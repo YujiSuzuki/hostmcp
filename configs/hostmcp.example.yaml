@@ -363,11 +363,24 @@ audit:
   # 監査ログを有効化（デフォルト: false）
   enabled: false
 
-  # File path for audit logs (optional)
-  # If not specified, audit logs are written to stdout with regular logs
-  # 監査ログのファイルパス（オプション）
-  # 指定しない場合、監査ログは通常のログと共にstdoutに出力されます
-  # file: "/var/log/hostmcp/audit.log"
+  # File path for audit logs. Required when enabled is true. Always written to a file (never stdout).
+  # Supports "~/" prefix for home directory expansion.
+  #
+  # 監査ログのファイルパス。enabled が true のとき必須です。常にファイルに出力されます（stdout には出力しません）。
+  # "~/"プレフィックスでホームディレクトリ展開をサポートします。
+  file: "~/.hostmcp/audit.log"
+
+  # Log rotation on server startup.
+  # Each time the server starts, the current log is renamed to audit.log.1,
+  # audit.log.1 → audit.log.2, and so on. Files beyond 'keep' are deleted.
+  # Set keep: 0 to disable rotation.
+  #
+  # サーバー起動時のログローテーション。
+  # 起動のたびに現在のログを audit.log.1 にリネームし、
+  # audit.log.1 → audit.log.2 とシフトします。keep 件を超えたファイルは削除されます。
+  # keep: 0 でローテーションを無効にします。
+  rotation:
+    keep: 3
 
   # Events to log
   # ログ記録するイベント

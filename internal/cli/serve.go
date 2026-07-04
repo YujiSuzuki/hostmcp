@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/YujiSuzuki/hostmcp/internal/audit"
 	"github.com/YujiSuzuki/hostmcp/internal/config"
 	"github.com/YujiSuzuki/hostmcp/internal/docker"
 	"github.com/YujiSuzuki/hostmcp/internal/hosttools"
@@ -337,6 +338,16 @@ func runServe(cmd *cobra.Command, args []string) error {
 	// --dangerouslyおよび--dangerously-allフラグを解析して適用します。
 	if err := applyDangerouslyFlags(cfg, flagDangerously, flagDangerouslyAll); err != nil {
 		return err
+	}
+
+	// Initialize audit logging (rotates previous log file on startup).
+	// 監査ログを初期化します（起動時に前回のログファイルをローテーション）。
+	if cfg.Audit.Enabled {
+		if err := audit.Initialize(cfg.Audit); err != nil {
+			return fmt.Errorf("audit logging: %w", err)
+		}
+		defer audit.ResetLogger()
+		slog.Info("Audit logging enabled", "file", audit.GetLogger().FilePath(), "keep", cfg.Audit.Rotation.Keep)
 	}
 
 	// Log server startup information.

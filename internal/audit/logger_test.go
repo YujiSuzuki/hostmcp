@@ -14,7 +14,7 @@ import (
 )
 
 func TestNewLogger(t *testing.T) {
-	t.Run("stdout logger", func(t *testing.T) {
+	t.Run("error when file is empty", func(t *testing.T) {
 		cfg := config.AuditConfig{
 			Enabled: true,
 			File:    "",
@@ -24,14 +24,9 @@ func TestNewLogger(t *testing.T) {
 			},
 		}
 
-		logger, err := newLogger(cfg)
-		if err != nil {
-			t.Fatalf("newLogger() error = %v", err)
-		}
-		defer logger.Close()
-
-		if logger.file != nil {
-			t.Error("expected file to be nil for stdout logger")
+		_, err := newLogger(cfg)
+		if err == nil {
+			t.Error("expected error when File is empty, got nil")
 		}
 	})
 
@@ -350,6 +345,90 @@ func TestGlobalFunctions(t *testing.T) {
 			t.Errorf("expected event type %q not found in log file", expected)
 		}
 	}
+}
+
+func TestRotateFile(t *testing.T) {
+	t.Run("keep=0 is no-op", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "audit.log")
+		os.WriteFile(path, []byte("data"), 0644)
+
+		if err := rotateFile(path, 0); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if _, err := os.Stat(path); err != nil {
+			t.Error("original file should still exist")
+		}
+	})
+
+	t.Run("no error when file does not exist", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "audit.log")
+
+		if err := rotateFile(path, 3); err != nil {
+			t.Fatalf("unexpected error for non-existent file: %v", err)
+		}
+	})
+
+	t.Run("keep=1 renames current to .1", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "audit.log")
+		os.WriteFile(path, []byte("current"), 0644)
+
+		if err := rotateFile(path, 1); err != nil {
+			t.Fatalf("rotateFile error: %v", err)
+		}
+		if _, err := os.Stat(path); err == nil {
+			t.Error("original file should be gone after rotation")
+		}
+		data, err := os.ReadFile(path + ".1")
+		if err != nil {
+			t.Fatalf("expected .1 file: %v", err)
+		}
+		if string(data) != "current" {
+			t.Errorf(".1 content = %q, want %q", string(data), "current")
+		}
+	})
+
+	t.Run("shifts existing rotated files", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "audit.log")
+		os.WriteFile(path, []byte("new"), 0644)
+		os.WriteFile(path+".1", []byte("old1"), 0644)
+		os.WriteFile(path+".2", []byte("old2"), 0644)
+
+		if err := rotateFile(path, 3); err != nil {
+			t.Fatalf("rotateFile error: %v", err)
+		}
+
+		cases := []struct{ suffix, want string }{
+			{".1", "new"},
+			{".2", "old1"},
+			{".3", "old2"},
+		}
+		for _, c := range cases {
+			data, err := os.ReadFile(path + c.suffix)
+			if err != nil {
+				t.Fatalf("expected file %s: %v", c.suffix, err)
+			}
+			if string(data) != c.want {
+				t.Errorf("%s content = %q, want %q", c.suffix, string(data), c.want)
+			}
+		}
+	})
+
+	t.Run("deletes oldest file beyond keep", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "audit.log")
+		os.WriteFile(path+".2", []byte("oldest"), 0644)
+
+		if err := rotateFile(path, 2); err != nil {
+			t.Fatalf("rotateFile error: %v", err)
+		}
+		if _, err := os.Stat(path + ".2"); err == nil {
+			t.Error("oldest file (.2) should have been deleted")
+		}
+	})
 }
 
 func TestMeasureDuration(t *testing.T) {

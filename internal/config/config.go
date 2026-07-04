@@ -434,16 +434,31 @@ type AuditConfig struct {
 	// Enabledは監査ログを有効化します。
 	Enabled bool `yaml:"enabled"`
 
-	// File is the path to write audit logs.
-	// If empty, audit logs are written to stdout with regular logs.
+	// File is the path to write audit logs. Required when Enabled is true.
+	// Supports "~/" prefix for home directory expansion.
 	//
-	// Fileは監査ログを書き込むパスです。
-	// 空の場合、監査ログは通常のログと共にstdoutに出力されます。
+	// Fileは監査ログを書き込むパスです。Enabled が true のとき必須です。
+	// "~/"プレフィックスでホームディレクトリ展開をサポートします。
 	File string `yaml:"file"`
+
+	// Rotation controls log file rotation on server startup.
+	// Rotationはサーバー起動時のログファイルローテーションを制御します。
+	Rotation AuditRotationConfig `yaml:"rotation"`
 
 	// Events specifies which events to log.
 	// Eventsはログ記録するイベントを指定します。
 	Events AuditEvents `yaml:"events"`
+}
+
+// AuditRotationConfig controls audit log rotation behavior.
+// AuditRotationConfigは監査ログのローテーション動作を制御します。
+type AuditRotationConfig struct {
+	// Keep is the number of old log files to retain (e.g., audit.log.1, .2, .3).
+	// Set to 0 to disable rotation.
+	//
+	// Keepは保持する古いログファイルの数です（例: audit.log.1, .2, .3）。
+	// 0に設定するとローテーションを無効にします。
+	Keep int `yaml:"keep"`
 }
 
 // AuditEvents specifies which event types to include in audit logs.
@@ -796,6 +811,9 @@ func NewDefaultConfig() *Config {
 		Audit: AuditConfig{
 			Enabled: false,
 			File:    "",
+			Rotation: AuditRotationConfig{
+				Keep: 3,
+			},
 			Events: AuditEvents{
 				ToolCalls:         true,
 				AccessDenied:      true,
