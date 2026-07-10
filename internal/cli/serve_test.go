@@ -9,6 +9,7 @@ package cli
 
 import (
 	"bytes"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,20 +18,23 @@ import (
 	"github.com/YujiSuzuki/hostmcp/internal/config"
 )
 
-// TestApplyWorkspaceOverrides tests all three transformation steps of applyWorkspaceOverrides.
-// The function must: (1) apply --workspace flag, (2) resolve HostAccess.WorkspaceRoot to
-// absolute and propagate to AutoImport, (3) resolve a remaining relative AutoImport.WorkspaceRoot.
+// TestApplyWorkspaceOverrides tests all four transformation steps of applyWorkspaceOverrides.
+// The function must: (1) apply --workspace flag, (2) apply --workspace-root flag (taking
+// precedence over --workspace), (3) resolve HostAccess.WorkspaceRoot to absolute and propagate
+// to AutoImport, (4) resolve a remaining relative AutoImport.WorkspaceRoot.
 //
-// TestApplyWorkspaceOverridesはapplyWorkspaceOverridesの3つの変換ステップをテストします。
-// (1) --workspaceフラグの適用、(2) HostAccess.WorkspaceRootの絶対パス解決とAutoImportへの伝播、
-// (3) 残った相対パスのAutoImport.WorkspaceRootの解決。
+// TestApplyWorkspaceOverridesはapplyWorkspaceOverridesの4つの変換ステップをテストします。
+// (1) --workspaceフラグの適用、(2) --workspace-rootフラグの適用（--workspaceより優先）、
+// (3) HostAccess.WorkspaceRootの絶対パス解決とAutoImportへの伝播、
+// (4) 残った相対パスのAutoImport.WorkspaceRootの解決。
 func TestApplyWorkspaceOverrides(t *testing.T) {
 	tests := []struct {
-		name          string // Test case name / テストケース名
-		flagWorkspace string // Value of --workspace flag / --workspaceフラグの値
-		initial       func() *config.Config
-		wantErr       bool
-		validate      func(*testing.T, *config.Config)
+		name              string // Test case name / テストケース名
+		flagWorkspace     string // Value of --workspace flag / --workspaceフラグの値
+		flagWorkspaceRoot string // Value of --workspace-root flag / --workspace-rootフラグの値
+		initial           func() *config.Config
+		wantErr           bool
+		validate          func(*testing.T, *config.Config)
 	}{
 		{
 			// --workspace absolute path sets both fields directly.
@@ -199,12 +203,56 @@ func TestApplyWorkspaceOverrides(t *testing.T) {
 				}
 			},
 		},
+		{
+			// --workspace-root overrides workspace_root independently of --config/--workspace;
+			// it takes precedence over any config-file value.
+			//
+			// --workspace-rootは--config/--workspaceとは独立してworkspace_rootを上書きする。
+			// 設定ファイルの値より優先される。
+			name:              "flagWorkspaceRoot overrides config workspace_root",
+			flagWorkspaceRoot: "/override/workspace-root",
+			initial: func() *config.Config {
+				return &config.Config{
+					HostAccess: config.HostAccessConfig{
+						WorkspaceRoot: "/config/workspace",
+					},
+				}
+			},
+			validate: func(t *testing.T, cfg *config.Config) {
+				if cfg.HostAccess.WorkspaceRoot != "/override/workspace-root" {
+					t.Errorf("HostAccess.WorkspaceRoot = %q, want /override/workspace-root", cfg.HostAccess.WorkspaceRoot)
+				}
+				if cfg.Security.BlockedPaths.AutoImport.WorkspaceRoot != "/override/workspace-root" {
+					t.Errorf("AutoImport.WorkspaceRoot = %q, want /override/workspace-root",
+						cfg.Security.BlockedPaths.AutoImport.WorkspaceRoot)
+				}
+			},
+		},
+		{
+			// flagWorkspaceRoot takes precedence over flagWorkspace when both are somehow set.
+			// flagWorkspaceとflagWorkspaceRootが両方設定された場合、flagWorkspaceRootが優先される。
+			name:              "flagWorkspaceRoot takes precedence over flagWorkspace",
+			flagWorkspace:     "/flag/workspace",
+			flagWorkspaceRoot: "/flag/workspace-root",
+			initial: func() *config.Config {
+				return &config.Config{}
+			},
+			validate: func(t *testing.T, cfg *config.Config) {
+				if cfg.HostAccess.WorkspaceRoot != "/flag/workspace-root" {
+					t.Errorf("HostAccess.WorkspaceRoot = %q, want /flag/workspace-root", cfg.HostAccess.WorkspaceRoot)
+				}
+				if cfg.Security.BlockedPaths.AutoImport.WorkspaceRoot != "/flag/workspace-root" {
+					t.Errorf("AutoImport.WorkspaceRoot = %q, want /flag/workspace-root",
+						cfg.Security.BlockedPaths.AutoImport.WorkspaceRoot)
+				}
+			},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := tt.initial()
-			err := applyWorkspaceOverrides(cfg, tt.flagWorkspace)
+			err := applyWorkspaceOverrides(cfg, tt.flagWorkspace, tt.flagWorkspaceRoot)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("applyWorkspaceOverrides() error = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -220,7 +268,7 @@ func TestApplyWorkspaceOverrides(t *testing.T) {
 // TestResolveConfigFileはresolveConfigFileヘルパーの主要シナリオをテストします。
 func TestResolveConfigFile(t *testing.T) {
 	t.Run("neither flag given returns error", func(t *testing.T) {
-		_, err := resolveConfigFile("", "")
+		_, err := resolveConfigFile("", "", "serve")
 		if err == nil {
 			t.Fatal("expected error when neither --config nor --workspace given")
 		}
@@ -229,8 +277,24 @@ func TestResolveConfigFile(t *testing.T) {
 		}
 	})
 
+	t.Run("neither flag given uses invoking command name in usage examples", func(t *testing.T) {
+		_, err := resolveConfigFile("", "", "tools list")
+		if err == nil {
+			t.Fatal("expected error when neither --config nor --workspace given")
+		}
+		if !strings.Contains(err.Error(), "hostmcp tools list --workspace") {
+			t.Errorf("expected error to reference 'hostmcp tools list --workspace', got: %v", err)
+		}
+		if !strings.Contains(err.Error(), "hostmcp tools list --config") {
+			t.Errorf("expected error to reference 'hostmcp tools list --config', got: %v", err)
+		}
+		if strings.Contains(err.Error(), "hostmcp serve") {
+			t.Errorf("error should not reference 'hostmcp serve' when called from 'tools list', got: %v", err)
+		}
+	})
+
 	t.Run("--config given returns it as-is", func(t *testing.T) {
-		got, err := resolveConfigFile("/some/custom/hostmcp.yaml", "")
+		got, err := resolveConfigFile("/some/custom/hostmcp.yaml", "", "serve")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -250,7 +314,7 @@ func TestResolveConfigFile(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		got, err := resolveConfigFile("", tmpDir)
+		got, err := resolveConfigFile("", tmpDir, "serve")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -261,7 +325,7 @@ func TestResolveConfigFile(t *testing.T) {
 
 	t.Run("--workspace with missing config returns error mentioning hostmcp init", func(t *testing.T) {
 		emptyDir := t.TempDir()
-		_, err := resolveConfigFile("", emptyDir)
+		_, err := resolveConfigFile("", emptyDir, "serve")
 		if err == nil {
 			t.Fatal("expected error when config file not found")
 		}
@@ -269,6 +333,111 @@ func TestResolveConfigFile(t *testing.T) {
 			t.Errorf("expected error to mention 'hostmcp init', got: %v", err)
 		}
 	})
+
+	t.Run("both --config and --workspace given returns mutual exclusivity error", func(t *testing.T) {
+		_, err := resolveConfigFile("/some/custom/hostmcp.yaml", "/some/workspace", "serve")
+		if err == nil {
+			t.Fatal("expected error when both --config and --workspace are given")
+		}
+		if !strings.Contains(err.Error(), "--config") || !strings.Contains(err.Error(), "--workspace") {
+			t.Errorf("error should mention both flags, got: %v", err)
+		}
+		if !strings.Contains(err.Error(), "mutually exclusive") {
+			t.Errorf("error should say the flags are mutually exclusive, got: %v", err)
+		}
+	})
+
+	t.Run("both flags given uses invoking command name in the mutual exclusivity error", func(t *testing.T) {
+		_, err := resolveConfigFile("/some/custom/hostmcp.yaml", "/some/workspace", "tools sync")
+		if err == nil {
+			t.Fatal("expected error when both --config and --workspace are given")
+		}
+		if !strings.Contains(err.Error(), "hostmcp tools sync") {
+			t.Errorf("expected error to reference 'hostmcp tools sync', got: %v", err)
+		}
+	})
+}
+
+// TestLogWorkspaceConfigLocation verifies that logWorkspaceConfigLocation warns
+// when the --config path doesn't match the {workspace}/.sandbox/config/hostmcp.yaml
+// layout implied by workspace_root, logs at info level when it matches, and
+// also logs at info level (no warning) when the config path doesn't follow
+// that layout at all (nothing to compare against).
+//
+// TestLogWorkspaceConfigLocationは、--configのパスがworkspace_rootから導出される
+// {workspace}/.sandbox/config/hostmcp.yamlレイアウトと一致しない場合に警告し、
+// 一致する場合はinfoレベルでログ出力し、設定ファイルのパスがそもそも
+// そのレイアウトに従っていない場合（比較対象がない場合）もinfoレベルで
+// ログ出力する（警告しない）ことを確認します。
+func TestLogWorkspaceConfigLocation(t *testing.T) {
+	t.Run("diverging paths produce a warning", func(t *testing.T) {
+		workspaceRoot := t.TempDir()
+		otherWorkspace := t.TempDir()
+		cfgPath := filepath.Join(otherWorkspace, ".sandbox", "config", "hostmcp.yaml")
+
+		var buf bytes.Buffer
+		oldLogger := captureDefaultLogger(&buf)
+		defer oldLogger()
+
+		logWorkspaceConfigLocation(cfgPath, workspaceRoot)
+
+		output := buf.String()
+		if !strings.Contains(output, "level=WARN") {
+			t.Errorf("expected a WARN log, got:\n%s", output)
+		}
+		if !strings.Contains(output, "diverged") {
+			t.Errorf("expected log message to mention divergence, got:\n%s", output)
+		}
+	})
+
+	t.Run("matching paths produce info, not a warning", func(t *testing.T) {
+		workspaceRoot := t.TempDir()
+		cfgPath := filepath.Join(workspaceRoot, ".sandbox", "config", "hostmcp.yaml")
+
+		var buf bytes.Buffer
+		oldLogger := captureDefaultLogger(&buf)
+		defer oldLogger()
+
+		logWorkspaceConfigLocation(cfgPath, workspaceRoot)
+
+		output := buf.String()
+		if strings.Contains(output, "level=WARN") {
+			t.Errorf("expected no WARN log when paths match, got:\n%s", output)
+		}
+		if !strings.Contains(output, "level=INFO") {
+			t.Errorf("expected an INFO log, got:\n%s", output)
+		}
+	})
+
+	t.Run("non-standard config layout produces info, not a warning", func(t *testing.T) {
+		workspaceRoot := t.TempDir()
+		cfgPath := "/some/custom/path/my-config.yaml"
+
+		var buf bytes.Buffer
+		oldLogger := captureDefaultLogger(&buf)
+		defer oldLogger()
+
+		logWorkspaceConfigLocation(cfgPath, workspaceRoot)
+
+		output := buf.String()
+		if strings.Contains(output, "level=WARN") {
+			t.Errorf("expected no WARN log for a non-standard config path, got:\n%s", output)
+		}
+		if !strings.Contains(output, "level=INFO") {
+			t.Errorf("expected an INFO log, got:\n%s", output)
+		}
+	})
+}
+
+// captureDefaultLogger redirects slog's default logger to write into buf and
+// returns a restore function.
+//
+// captureDefaultLoggerはslogのデフォルトロガーをbufに書き込むよう変更し、
+// 復元用の関数を返します。
+func captureDefaultLogger(buf *bytes.Buffer) func() {
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(buf, nil)))
+	return func() { slog.SetDefault(old) }
 }
 
 // TestApplyAllowExecFlags tests the applyAllowExecFlags function with various inputs.

@@ -279,7 +279,7 @@ start_server() {
 
     print_info "Starting server on port $TEST_PORT..."
 
-    "$DKMCP_BIN" serve --config "$CONFIG_FILE" --workspace "$TEST_WORKSPACE" > "$LOG_FILE" 2>&1 &
+    "$DKMCP_BIN" serve --config "$CONFIG_FILE" --workspace-root "$TEST_WORKSPACE" > "$LOG_FILE" 2>&1 &
     SERVER_PID=$!
 
     print_info "Server PID: $SERVER_PID"

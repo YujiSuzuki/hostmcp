@@ -91,11 +91,28 @@ var (
 	// flagWorkspace specifies the host-side workspace root directory.
 	// Used as the working directory for host commands and tool discovery base.
 	// Overrides host_access.workspace_root and blocked_paths.auto_import.workspace_root in config.
+	// Also used to derive the config file path when --config is not given.
+	// Mutually exclusive with --config; see resolveConfigFile.
 	//
 	// flagWorkspaceはホスト側のワークスペースルートディレクトリを指定します。
 	// ホストコマンドの作業ディレクトリおよびツール検出の基点として使用されます。
 	// 設定ファイルのhost_access.workspace_rootおよびblocked_paths.auto_import.workspace_rootを上書きします。
+	// --configが指定されていない場合、設定ファイルパスの導出にも使用されます。
+	// --configとは併用不可（resolveConfigFile参照）。
 	flagWorkspace string
+
+	// flagWorkspaceRoot overrides host_access.workspace_root (and the derived
+	// blocked_paths.auto_import.workspace_root) without affecting config file
+	// resolution. Unlike --workspace, it can be combined with --config — use it to
+	// reuse the same hostmcp.yaml (security policy, command whitelist, etc.) while
+	// pointing at a different workspace directory.
+	//
+	// flagWorkspaceRootは設定ファイルの解決には関与せず、host_access.workspace_root
+	// （および派生するblocked_paths.auto_import.workspace_root）のみを上書きします。
+	// --workspaceと異なり--configと併用可能です。同じhostmcp.yaml
+	// （セキュリティポリシー・コマンドホワイトリスト等）を使い回しつつ、
+	// 別のワークスペースディレクトリを指定したい場合に使用します。
+	flagWorkspaceRoot string
 
 	// flagHostDangerously enables dangerous mode for host commands.
 	// When set, host commands in the dangerously list can be executed
@@ -193,7 +210,8 @@ func init() {
 
 	// Add host access flags
 	// ホストアクセスフラグを追加
-	serveCmd.Flags().StringVar(&flagWorkspace, "workspace", "", "Host workspace root directory (overrides config host_access.workspace_root)")
+	serveCmd.Flags().StringVar(&flagWorkspace, "workspace", "", "Host workspace root directory; also derives the config file path (mutually exclusive with --config)")
+	serveCmd.Flags().StringVar(&flagWorkspaceRoot, "workspace-root", "", "Override host_access.workspace_root only, without affecting config file resolution (combinable with --config)")
 	serveCmd.Flags().BoolVar(&flagHostDangerously, "host-dangerously", false, "Enable dangerous mode for host commands")
 
 	// Add sync flag for host tools
@@ -218,7 +236,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	// Resolve --config / --workspace flags to a config file path first,
 	// so that flag errors are reported before any cosmetic output.
 	// バナー表示前にフラグを解決し、フラグエラーは cosmetic 出力の前に返す。
-	resolvedCfg, err := resolveConfigFile(cfgFile, flagWorkspace)
+	resolvedCfg, err := resolveConfigFile(cfgFile, flagWorkspace, "serve")
 	if err != nil {
 		return err
 	}
@@ -318,8 +336,22 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	// Apply workspace path settings: resolve flag overrides, propagate to AutoImport, ensure absolute paths.
 	// ワークスペースパス設定の適用：フラグの上書き、AutoImportへの伝播、絶対パスの保証。
-	if err := applyWorkspaceOverrides(cfg, flagWorkspace); err != nil {
+	if err := applyWorkspaceOverrides(cfg, flagWorkspace, flagWorkspaceRoot); err != nil {
 		return err
+	}
+
+	// When --config was given directly (not derived from --workspace, and not
+	// explicitly overridden via --workspace-root), workspace_root came from the
+	// config file as-is and may not be what the operator expects (e.g. a relative
+	// workspace_root resolved against the current directory rather than the
+	// config file's location). Surface this rather than silently proceeding.
+	// --configが直接指定された場合（--workspaceからの導出でも--workspace-rootでの
+	// 明示的な上書きでもない場合）、workspace_rootは設定ファイルの値がそのまま
+	// 使われており、操作者の想定と異なる可能性があります（例：相対パスの
+	// workspace_rootが設定ファイルの場所ではなくカレントディレクトリ基準で解決される）。
+	// 黙って進めず、この状況を可視化します。
+	if flagWorkspace == "" && flagWorkspaceRoot == "" {
+		logWorkspaceConfigLocation(resolvedCfg, cfg.HostAccess.WorkspaceRoot)
 	}
 
 	// Apply --host-dangerously flag to enable dangerous mode for host commands
@@ -578,28 +610,46 @@ func runServe(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// resolveConfigFile resolves the server config file path from --config and --workspace flags.
+// resolveConfigFile resolves the config file path from --config and --workspace flags.
 // If cfgFile is already set (via --config), it is returned unchanged.
 // If --config was not given, the config path is derived from --workspace as:
 //
 //	{absWorkspace}/.sandbox/config/hostmcp.yaml
 //
+// cmdName is the invoking command's usage string (e.g. "serve", "tools list"),
+// used only to build accurate usage examples in the "neither flag given" error.
+//
 // Returns an error if neither flag is given, the path cannot be resolved, or the file
 // cannot be accessed (with distinct messages for "not found" vs other errors).
 //
-// resolveConfigFileは--configと--workspaceフラグからサーバー設定ファイルパスを解決します。
+// resolveConfigFileは--configと--workspaceフラグから設定ファイルパスを解決します。
 // --configが指定済みの場合はそのまま返します。
 // --configが指定されていない場合、設定パスを--workspaceから次のように導出します：
 //
 //	{absWorkspace}/.sandbox/config/hostmcp.yaml
-func resolveConfigFile(cfgFile, flagWorkspace string) (string, error) {
+//
+// cmdNameは呼び出し元コマンドの使用文字列（例: "serve"、"tools list"）で、
+// 「どちらのフラグも未指定」エラーの使用例を正しく組み立てるためだけに使われます。
+func resolveConfigFile(cfgFile, flagWorkspace, cmdName string) (string, error) {
 	if cfgFile == "" && flagWorkspace == "" {
 		return "", fmt.Errorf(
-			"either --config or --workspace is required\n\n" +
-				"  hostmcp serve --workspace /path/to/project\n" +
-				"      Uses {workspace}/.sandbox/config/hostmcp.yaml\n\n" +
-				"  hostmcp serve --config /path/to/hostmcp.yaml\n" +
+			"either --config or --workspace is required\n\n"+
+				"  hostmcp %s --workspace /path/to/project\n"+
+				"      Uses {workspace}/.sandbox/config/hostmcp.yaml\n\n"+
+				"  hostmcp %s --config /path/to/hostmcp.yaml\n"+
 				"      Uses the specified config file directly",
+			cmdName, cmdName,
+		)
+	}
+	if cfgFile != "" && flagWorkspace != "" {
+		return "", fmt.Errorf(
+			"--config and --workspace are mutually exclusive\n\n"+
+				"  hostmcp %s --workspace /path/to/project\n"+
+				"      Uses {workspace}/.sandbox/config/hostmcp.yaml\n\n"+
+				"  hostmcp %s --config /path/to/hostmcp.yaml\n"+
+				"      Uses the specified config file directly\n\n"+
+				"To override workspace_root while using --config, use --workspace-root instead.",
+			cmdName, cmdName,
 		)
 	}
 	if cfgFile != "" {
@@ -622,6 +672,60 @@ func resolveConfigFile(cfgFile, flagWorkspace string) (string, error) {
 		return "", fmt.Errorf("failed to access config file %s: %w", resolved, err)
 	}
 	return resolved, nil
+}
+
+// logWorkspaceConfigLocation logs the resolved workspace_root, warning instead
+// of informing when the config file's path does not match the standard
+// {workspace}/.sandbox/config/hostmcp.yaml layout implied by workspace_root —
+// a sign the two may have diverged unintentionally. If workspace_root is
+// empty (valid when host_access.host_commands is disabled), the config path
+// cannot be resolved, or it doesn't follow that layout at all, divergence
+// can't be determined, so this only logs the workspace at info level.
+//
+// Only meaningful when --config was given directly; see the call site.
+//
+// logWorkspaceConfigLocationは解決済みのworkspace_rootをログ出力します。
+// 設定ファイルのパスがworkspace_rootから導出される標準レイアウト
+// {workspace}/.sandbox/config/hostmcp.yamlと一致しない場合は、意図しない
+// 乖離の兆候としてwarningを出します。workspace_rootが空（host_access.host_commandsが
+// 無効な場合は正当な状態）、設定ファイルのパスが解決できない、または
+// そもそもそのレイアウトに従っていない場合は乖離を判定できないため、
+// workspaceをinfoレベルで出力するのみです。
+//
+// --configが直接指定された場合にのみ意味を持ちます。呼び出し箇所を参照。
+func logWorkspaceConfigLocation(resolvedCfg, workspaceRoot string) {
+	if workspaceRoot == "" {
+		// Not configured (valid when host_access.host_commands is disabled),
+		// so there's nothing to compare the config location against.
+		slog.Info("using workspace", "workspace", workspaceRoot)
+		return
+	}
+
+	absCfg, err := filepath.Abs(resolvedCfg)
+	if err != nil {
+		slog.Info("using workspace", "workspace", workspaceRoot)
+		return
+	}
+
+	dir := filepath.Dir(absCfg)
+	if filepath.Base(absCfg) != "hostmcp.yaml" || filepath.Base(dir) != "config" || filepath.Base(filepath.Dir(dir)) != ".sandbox" {
+		// Config doesn't follow the {workspace}/.sandbox/config/hostmcp.yaml
+		// layout at all, so there's no implied workspace to compare against.
+		slog.Info("using workspace", "workspace", workspaceRoot)
+		return
+	}
+
+	impliedWorkspace := filepath.Dir(filepath.Dir(dir))
+	if impliedWorkspace != filepath.Clean(workspaceRoot) {
+		slog.Warn("config file location and workspace_root appear to have diverged",
+			"config", absCfg,
+			"workspace_root", workspaceRoot,
+			"workspace_implied_by_config_location", impliedWorkspace,
+		)
+		return
+	}
+
+	slog.Info("using workspace", "workspace", workspaceRoot)
 }
 
 // showBanner displays the ASCII art banner to stdout.
@@ -688,23 +792,30 @@ func writeSponsorMessage(w io.Writer) bool {
 }
 
 // applyWorkspaceOverrides resolves and propagates workspace path settings into cfg.
-// It applies three transformations in order:
+// It applies four transformations in order:
 //  1. If flagWorkspace is non-empty, it overrides both HostAccess.WorkspaceRoot and
 //     AutoImport.WorkspaceRoot (--workspace flag takes precedence over config file).
-//  2. If HostAccess.WorkspaceRoot is set, it is resolved to an absolute path and
+//  2. If flagWorkspaceRoot is non-empty, it overrides both fields again, taking
+//     precedence over flagWorkspace. Unlike --workspace, --workspace-root only
+//     overrides workspace_root and never affects config file resolution, so it can
+//     be combined with --config (which is mutually exclusive with --workspace).
+//  3. If HostAccess.WorkspaceRoot is set, it is resolved to an absolute path and
 //     propagated to AutoImport.WorkspaceRoot.
-//  3. If AutoImport.WorkspaceRoot is still relative (e.g. the default "."), it is
+//  4. If AutoImport.WorkspaceRoot is still relative (e.g. the default "."), it is
 //     resolved to an absolute path to eliminate CWD dependency.
 //
 // applyWorkspaceOverridesはワークスペースパス設定を解決してcfgに伝播します。
-// 以下の3つの変換を順に適用します：
+// 以下の4つの変換を順に適用します：
 //  1. flagWorkspaceが空でない場合、HostAccess.WorkspaceRootとAutoImport.WorkspaceRoot
 //     の両方を上書き（--workspaceフラグは設定ファイルより優先）。
-//  2. HostAccess.WorkspaceRootが設定されている場合、絶対パスに解決し
+//  2. flagWorkspaceRootが空でない場合、両フィールドをさらに上書き（flagWorkspaceより優先）。
+//     --workspaceと異なり、--workspace-rootはworkspace_rootの上書きのみを行い、設定ファイルの
+//     解決には関与しないため、（--workspaceとは併用不可の）--configと組み合わせられます。
+//  3. HostAccess.WorkspaceRootが設定されている場合、絶対パスに解決し
 //     AutoImport.WorkspaceRootにも伝播。
-//  3. AutoImport.WorkspaceRootがまだ相対パス（デフォルト"."など）の場合、
+//  4. AutoImport.WorkspaceRootがまだ相対パス（デフォルト"."など）の場合、
 //     CWD依存を排除するために絶対パスに変換。
-func applyWorkspaceOverrides(cfg *config.Config, flagWorkspace string) error {
+func applyWorkspaceOverrides(cfg *config.Config, flagWorkspace, flagWorkspaceRoot string) error {
 	// Step 1: CLI flag takes precedence over config file.
 	// Step 1: CLIフラグは設定ファイルより優先される。
 	if flagWorkspace != "" {
@@ -712,8 +823,15 @@ func applyWorkspaceOverrides(cfg *config.Config, flagWorkspace string) error {
 		cfg.Security.BlockedPaths.AutoImport.WorkspaceRoot = flagWorkspace
 	}
 
-	// Step 2: Resolve HostAccess.WorkspaceRoot and propagate to AutoImport.
-	// Step 2: HostAccess.WorkspaceRootを解決してAutoImportに伝播。
+	// Step 2: --workspace-root takes precedence over --workspace and the config file.
+	// Step 2: --workspace-rootは--workspaceおよび設定ファイルより優先される。
+	if flagWorkspaceRoot != "" {
+		cfg.HostAccess.WorkspaceRoot = flagWorkspaceRoot
+		cfg.Security.BlockedPaths.AutoImport.WorkspaceRoot = flagWorkspaceRoot
+	}
+
+	// Step 3: Resolve HostAccess.WorkspaceRoot and propagate to AutoImport.
+	// Step 3: HostAccess.WorkspaceRootを解決してAutoImportに伝播。
 	if cfg.HostAccess.WorkspaceRoot != "" {
 		absPath, err := filepath.Abs(cfg.HostAccess.WorkspaceRoot)
 		if err != nil {
@@ -723,8 +841,8 @@ func applyWorkspaceOverrides(cfg *config.Config, flagWorkspace string) error {
 		cfg.Security.BlockedPaths.AutoImport.WorkspaceRoot = absPath
 	}
 
-	// Step 3: Ensure AutoImport.WorkspaceRoot is always absolute.
-	// Step 3: AutoImport.WorkspaceRootが常に絶対パスであることを保証。
+	// Step 4: Ensure AutoImport.WorkspaceRoot is always absolute.
+	// Step 4: AutoImport.WorkspaceRootが常に絶対パスであることを保証。
 	if r := cfg.Security.BlockedPaths.AutoImport.WorkspaceRoot; r != "" && !filepath.IsAbs(r) {
 		abs, err := filepath.Abs(r)
 		if err != nil {

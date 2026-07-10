@@ -22,8 +22,8 @@
 # Prerequisites / 前提条件:
 #   - HostMCP server running with host_access enabled
 #     host_access を有効にした HostMCP サーバーが起動中であること
-#   - Example: hostmcp serve --config hostmcp.yaml --workspace /path/to/workspace
-#     例: hostmcp serve --config hostmcp.yaml --workspace /path/to/workspace
+#   - Example: hostmcp serve --config hostmcp.yaml --workspace-root /path/to/workspace
+#     例: hostmcp serve --config hostmcp.yaml --workspace-root /path/to/workspace
 #
 # Temporary files created / 作成される一時ファイル:
 #   /tmp/hostmcp-host-integ-test  - Test binary / テスト用バイナリ
@@ -197,7 +197,7 @@ check_server() {
         echo ""
         echo "Make sure HostMCP server is running with host_access enabled:"
         echo "host_access を有効にした HostMCP サーバーが起動していることを確認："
-        echo "  hostmcp serve --config hostmcp.yaml --workspace /path/to/workspace"
+        echo "  hostmcp serve --config hostmcp.yaml --workspace-root /path/to/workspace"
         exit 1
     fi
 

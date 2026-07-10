@@ -476,6 +476,23 @@ host_access:
   # 実行前に承認が必要です。`hostmcp tools sync`または`hostmcp serve --sync`で
   # インタラクティブにツールをレビュー・承認します。
   #
+  # `hostmcp serve`, `hostmcp tools sync`, and `hostmcp tools list` all
+  # require --config <path> or --workspace <path> (mutually exclusive).
+  # If --workspace is given, the config file is derived as
+  # {workspace}/.sandbox/config/hostmcp.yaml.
+  # To reuse the same hostmcp.yaml (via --config) while pointing at a
+  # different workspace directory, use --workspace-root instead, which
+  # only overrides workspace_root and does not affect config resolution.
+  #
+  # `hostmcp serve`、`hostmcp tools sync`、`hostmcp tools list` はいずれも
+  # --config <path> または --workspace <path> のどちらかが必要です
+  # （併用不可）。--workspace を指定した場合、設定ファイルは
+  # {workspace}/.sandbox/config/hostmcp.yaml として自動的に導出されます。
+  # 同じ hostmcp.yaml（--config）を使い回しつつ別のワークスペース
+  # ディレクトリを指定したい場合は、代わりに --workspace-root を使用して
+  # ください。こちらは workspace_root のみを上書きし、設定ファイルの
+  # 解決には影響しません。
+  #
   # Directory layout:
   #   ~/.hostmcp/host-tools/
   #   ├── _common/                 # Shared across all projects

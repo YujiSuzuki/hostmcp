@@ -383,11 +383,17 @@ host_access:
 	}
 }
 
-// TestRunToolsList_WorkspaceFlag verifies that the --workspace flag overrides
-// the workspace_root from the configuration file.
+// TestRunToolsList_WorkspaceFlag verifies that the --workspace-root flag
+// overrides the workspace_root from the configuration file while --config is
+// used to load the config file directly. (Prior to --workspace-root being
+// introduced, this scenario used --workspace together with --config, but
+// those two flags are now mutually exclusive — see TestRunToolsList_ConfigAndWorkspaceMutuallyExclusive.)
 //
-// TestRunToolsList_WorkspaceFlagは--workspaceフラグが設定ファイルの
-// workspace_rootを上書きすることを確認します。
+// TestRunToolsList_WorkspaceFlagは、--configで設定ファイルを直接読み込みつつ、
+// --workspace-rootフラグが設定ファイルのworkspace_rootを上書きすることを
+// 確認します。（--workspace-root導入前はこのシナリオで--configと--workspaceを
+// 併用していましたが、現在この2つは併用不可です。
+// TestRunToolsList_ConfigAndWorkspaceMutuallyExclusive を参照。）
 func TestRunToolsList_WorkspaceFlag(t *testing.T) {
 	tmpDir := t.TempDir()
 	workspaceDir := filepath.Join(tmpDir, "custom-workspace")
@@ -416,10 +422,10 @@ host_access:
 	cfgFile = configPath
 	defer func() { cfgFile = oldCfgFile }()
 
-	// Override workspace via package variable (simulating --workspace flag)
-	oldWorkspace := flagToolsWorkspace
-	flagToolsWorkspace = workspaceDir
-	defer func() { flagToolsWorkspace = oldWorkspace }()
+	// Override workspace root via package variable (simulating --workspace-root flag)
+	oldWorkspaceRoot := flagToolsWorkspaceRoot
+	flagToolsWorkspaceRoot = workspaceDir
+	defer func() { flagToolsWorkspaceRoot = oldWorkspaceRoot }()
 
 	oldStdout := os.Stdout
 	r, w, _ := os.Pipe()
@@ -442,3 +448,415 @@ host_access:
 		t.Errorf("output should contain workspace path %q, got:\n%s", workspaceDir, output)
 	}
 }
+
+// TestRunToolsList_ConfigDerivedFromWorkspaceOnly verifies that, like
+// `hostmcp serve --sync`, `hostmcp tools list` can derive the config file
+// path from --workspace alone (as {workspace}/.sandbox/config/hostmcp.yaml)
+// when --config is not given.
+//
+// TestRunToolsList_ConfigDerivedFromWorkspaceOnlyは`hostmcp serve --sync`と
+// 同様に、`hostmcp tools list`が--configなしで--workspaceのみから
+// 設定ファイルパス（{workspace}/.sandbox/config/hostmcp.yaml）を
+// 導出できることを確認します。
+func TestRunToolsList_ConfigDerivedFromWorkspaceOnly(t *testing.T) {
+	workspaceDir := t.TempDir()
+	toolsDir := filepath.Join(workspaceDir, "tools")
+	if err := os.MkdirAll(toolsDir, 0755); err != nil {
+		t.Fatalf("failed to create tools dir: %v", err)
+	}
+	createTestTool(t, toolsDir, "my-tool.sh", "A test tool")
+
+	configDir := filepath.Join(workspaceDir, ".sandbox", "config")
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		t.Fatalf("failed to create config dir: %v", err)
+	}
+	writeTestConfig(t, configDir, fmt.Sprintf(`
+server:
+  port: 8080
+security:
+  mode: permissive
+host_access:
+  workspace_root: %s
+  host_tools:
+    enabled: true
+    directories:
+      - %s
+`, workspaceDir, toolsDir))
+
+	oldCfgFile := cfgFile
+	cfgFile = ""
+	defer func() { cfgFile = oldCfgFile }()
+
+	oldWorkspace := flagToolsWorkspace
+	flagToolsWorkspace = workspaceDir
+	defer func() { flagToolsWorkspace = oldWorkspace }()
+
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	err := runToolsList(toolsListCmd, nil)
+
+	w.Close()
+	os.Stdout = oldStdout
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var buf bytes.Buffer
+	buf.ReadFrom(r)
+	output := buf.String()
+
+	if !strings.Contains(output, "my-tool.sh") {
+		t.Errorf("output should list 'my-tool.sh' (proves config was loaded from workspace path), got:\n%s", output)
+	}
+}
+
+// TestRunToolsSync_ConfigDerivedFromWorkspaceOnly verifies that
+// `hostmcp tools sync` also derives the config file from --workspace alone.
+// It uses a config with host_tools enabled but no approved_dir, so the
+// non-interactive "approved_dir not configured" error path is hit — proving
+// the real file (not the built-in default config) was loaded.
+//
+// TestRunToolsSync_ConfigDerivedFromWorkspaceOnlyは`hostmcp tools sync`も
+// --workspaceのみから設定ファイルを導出できることを確認します。
+// host_toolsが有効でapproved_dir未設定の設定を使うことで、対話不要の
+// 「approved_dir not configured」エラー経路に到達させ、（組み込みの
+// デフォルト設定ではなく）実際のファイルが読み込まれたことを証明します。
+func TestRunToolsSync_ConfigDerivedFromWorkspaceOnly(t *testing.T) {
+	workspaceDir := t.TempDir()
+	configDir := filepath.Join(workspaceDir, ".sandbox", "config")
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		t.Fatalf("failed to create config dir: %v", err)
+	}
+	writeTestConfig(t, configDir, fmt.Sprintf(`
+server:
+  port: 8080
+security:
+  mode: permissive
+host_access:
+  workspace_root: %s
+  host_tools:
+    enabled: true
+    directories:
+      - /some/dir
+`, workspaceDir))
+
+	oldCfgFile := cfgFile
+	cfgFile = ""
+	defer func() { cfgFile = oldCfgFile }()
+
+	oldWorkspace := flagToolsWorkspace
+	flagToolsWorkspace = workspaceDir
+	defer func() { flagToolsWorkspace = oldWorkspace }()
+
+	err := runToolsSync(toolsSyncCmd, nil)
+	if err == nil {
+		t.Fatal("expected error when approved_dir is not configured")
+	}
+	if !strings.Contains(err.Error(), "approved_dir") {
+		t.Errorf("error = %q, want it to contain 'approved_dir' (proves config was loaded from workspace path)", err.Error())
+	}
+}
+
+// TestRunToolsList_MissingConfigAndWorkspace verifies that omitting both
+// --config and --workspace produces the same clear error as `serve --sync`,
+// instead of silently falling back to the built-in default config.
+//
+// TestRunToolsList_MissingConfigAndWorkspaceは--configと--workspaceの
+// 両方を省略した場合、組み込みデフォルト設定に暗黙にフォールバックせず、
+// `serve --sync`と同じ明確なエラーになることを確認します。
+func TestRunToolsList_MissingConfigAndWorkspace(t *testing.T) {
+	oldCfgFile := cfgFile
+	cfgFile = ""
+	defer func() { cfgFile = oldCfgFile }()
+
+	oldWorkspace := flagToolsWorkspace
+	flagToolsWorkspace = ""
+	defer func() { flagToolsWorkspace = oldWorkspace }()
+
+	err := runToolsList(toolsListCmd, nil)
+	if err == nil {
+		t.Fatal("expected error when both --config and --workspace are omitted")
+	}
+	if !strings.Contains(err.Error(), "either --config or --workspace is required") {
+		t.Errorf("error = %q, want it to contain 'either --config or --workspace is required'", err.Error())
+	}
+	if !strings.Contains(err.Error(), "hostmcp tools list --workspace") {
+		t.Errorf("error = %q, want it to reference 'hostmcp tools list --workspace', not 'hostmcp serve'", err.Error())
+	}
+}
+
+// TestRunToolsSync_MissingConfigAndWorkspace is the sync-command counterpart
+// of TestRunToolsList_MissingConfigAndWorkspace.
+//
+// TestRunToolsSync_MissingConfigAndWorkspaceはTestRunToolsList_MissingConfigAndWorkspaceの
+// syncコマンド版です。
+func TestRunToolsSync_MissingConfigAndWorkspace(t *testing.T) {
+	oldCfgFile := cfgFile
+	cfgFile = ""
+	defer func() { cfgFile = oldCfgFile }()
+
+	oldWorkspace := flagToolsWorkspace
+	flagToolsWorkspace = ""
+	defer func() { flagToolsWorkspace = oldWorkspace }()
+
+	err := runToolsSync(toolsSyncCmd, nil)
+	if err == nil {
+		t.Fatal("expected error when both --config and --workspace are omitted")
+	}
+	if !strings.Contains(err.Error(), "either --config or --workspace is required") {
+		t.Errorf("error = %q, want it to contain 'either --config or --workspace is required'", err.Error())
+	}
+	if !strings.Contains(err.Error(), "hostmcp tools sync --workspace") {
+		t.Errorf("error = %q, want it to reference 'hostmcp tools sync --workspace', not 'hostmcp serve'", err.Error())
+	}
+}
+
+// TestRunToolsList_ConfigAndWorkspaceMutuallyExclusive verifies that passing
+// both --config and --workspace to `hostmcp tools list` is rejected, instead
+// of silently using --config and ignoring --workspace.
+//
+// TestRunToolsList_ConfigAndWorkspaceMutuallyExclusiveは`hostmcp tools list`に
+// --configと--workspaceの両方を渡した場合、--workspaceを黙って無視するのではなく
+// エラーになることを確認します。
+func TestRunToolsList_ConfigAndWorkspaceMutuallyExclusive(t *testing.T) {
+	oldCfgFile := cfgFile
+	cfgFile = "/some/custom/hostmcp.yaml"
+	defer func() { cfgFile = oldCfgFile }()
+
+	oldWorkspace := flagToolsWorkspace
+	flagToolsWorkspace = "/some/workspace"
+	defer func() { flagToolsWorkspace = oldWorkspace }()
+
+	err := runToolsList(toolsListCmd, nil)
+	if err == nil {
+		t.Fatal("expected error when both --config and --workspace are given")
+	}
+	if !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Errorf("error = %q, want it to say the flags are mutually exclusive", err.Error())
+	}
+}
+
+// TestRunToolsSync_ConfigAndWorkspaceMutuallyExclusive is the sync-command
+// counterpart of TestRunToolsList_ConfigAndWorkspaceMutuallyExclusive.
+//
+// TestRunToolsSync_ConfigAndWorkspaceMutuallyExclusiveは
+// TestRunToolsList_ConfigAndWorkspaceMutuallyExclusiveのsyncコマンド版です。
+func TestRunToolsSync_ConfigAndWorkspaceMutuallyExclusive(t *testing.T) {
+	oldCfgFile := cfgFile
+	cfgFile = "/some/custom/hostmcp.yaml"
+	defer func() { cfgFile = oldCfgFile }()
+
+	oldWorkspace := flagToolsWorkspace
+	flagToolsWorkspace = "/some/workspace"
+	defer func() { flagToolsWorkspace = oldWorkspace }()
+
+	err := runToolsSync(toolsSyncCmd, nil)
+	if err == nil {
+		t.Fatal("expected error when both --config and --workspace are given")
+	}
+	if !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Errorf("error = %q, want it to say the flags are mutually exclusive", err.Error())
+	}
+}
+
+// TestToolsWorkspaceRootFlag verifies that the --workspace-root persistent flag
+// is configured on toolsCmd, separately from --workspace.
+//
+// TestToolsWorkspaceRootFlagは--workspace-root永続フラグが--workspaceとは別に
+// toolsCmdに設定されていることを確認します。
+func TestToolsWorkspaceRootFlag(t *testing.T) {
+	flag := toolsCmd.PersistentFlags().Lookup("workspace-root")
+	if flag == nil {
+		t.Fatal("--workspace-root flag not found on toolsCmd")
+	}
+
+	if flag.DefValue != "" {
+		t.Errorf("--workspace-root default = %q, want empty string", flag.DefValue)
+	}
+}
+
+// setupSyncConfirmTest creates a secure-mode config with no staging tools (so
+// RunInteractiveSync returns immediately without further stdin reads) and
+// points cfgFile at it directly, exercising the --config-only path.
+//
+// setupSyncConfirmTestはステージング中のツールがないsecureモードの設定を作成し
+// （RunInteractiveSyncがそれ以上stdinを読まずに即座に戻るようにするため）、
+// cfgFileを直接その設定ファイルに向けます。これにより--configのみのパスを検証します。
+func setupSyncConfirmTest(t *testing.T) {
+	t.Helper()
+	tmpDir := t.TempDir()
+	approvedDir := filepath.Join(tmpDir, "approved")
+	if err := os.MkdirAll(approvedDir, 0755); err != nil {
+		t.Fatalf("failed to create approved dir: %v", err)
+	}
+	workspaceDir := filepath.Join(tmpDir, "workspace")
+	if err := os.MkdirAll(workspaceDir, 0755); err != nil {
+		t.Fatalf("failed to create workspace dir: %v", err)
+	}
+
+	configPath := writeTestConfig(t, tmpDir, fmt.Sprintf(`
+server:
+  port: 8080
+security:
+  mode: permissive
+host_access:
+  workspace_root: %s
+  host_tools:
+    enabled: true
+    approved_dir: %s
+`, workspaceDir, approvedDir))
+
+	oldCfgFile := cfgFile
+	cfgFile = configPath
+	t.Cleanup(func() { cfgFile = oldCfgFile })
+
+	oldWorkspace := flagToolsWorkspace
+	flagToolsWorkspace = ""
+	t.Cleanup(func() { flagToolsWorkspace = oldWorkspace })
+
+	oldWorkspaceRoot := flagToolsWorkspaceRoot
+	flagToolsWorkspaceRoot = ""
+	t.Cleanup(func() { flagToolsWorkspaceRoot = oldWorkspaceRoot })
+}
+
+// TestRunToolsSync_ConfirmDeclined verifies that `tools sync --config` prompts
+// for confirmation of the resolved workspace_root, and aborts without error
+// when the user declines.
+//
+// TestRunToolsSync_ConfirmDeclinedは`tools sync --config`が解決済みの
+// workspace_rootの確認を求め、ユーザーが拒否した場合はエラーなしで
+// 中断することを確認します。
+func TestRunToolsSync_ConfirmDeclined(t *testing.T) {
+	setupSyncConfirmTest(t)
+
+	oldInput := confirmWorkspaceRootInput
+	confirmWorkspaceRootInput = strings.NewReader("n\n")
+	defer func() { confirmWorkspaceRootInput = oldInput }()
+
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	err := runToolsSync(toolsSyncCmd, nil)
+
+	w.Close()
+	os.Stdout = oldStdout
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var buf bytes.Buffer
+	buf.ReadFrom(r)
+	output := buf.String()
+
+	if !strings.Contains(output, "Workspace:") {
+		t.Errorf("output should contain 'Workspace:' prompt, got:\n%s", output)
+	}
+	if !strings.Contains(output, "Sync aborted.") {
+		t.Errorf("output should contain 'Sync aborted.', got:\n%s", output)
+	}
+}
+
+// TestRunToolsSync_ConfirmAccepted verifies that `tools sync --config`
+// proceeds with the sync when the user confirms the resolved workspace_root.
+//
+// TestRunToolsSync_ConfirmAcceptedは`tools sync --config`がユーザーが
+// 解決済みのworkspace_rootを確認した場合に同期を続行することを確認します。
+func TestRunToolsSync_ConfirmAccepted(t *testing.T) {
+	setupSyncConfirmTest(t)
+
+	oldInput := confirmWorkspaceRootInput
+	confirmWorkspaceRootInput = strings.NewReader("y\n")
+	defer func() { confirmWorkspaceRootInput = oldInput }()
+
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	err := runToolsSync(toolsSyncCmd, nil)
+
+	w.Close()
+	os.Stdout = oldStdout
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var buf bytes.Buffer
+	buf.ReadFrom(r)
+	output := buf.String()
+
+	if strings.Contains(output, "Sync aborted.") {
+		t.Errorf("output should not contain 'Sync aborted.' when confirmed, got:\n%s", output)
+	}
+}
+
+// TestRunToolsSync_NoConfirmWhenWorkspaceFlagGiven verifies that the
+// confirmation prompt is skipped when workspace_root was given explicitly via
+// --workspace (config path is derived, so there's nothing to diverge from).
+//
+// TestRunToolsSync_NoConfirmWhenWorkspaceFlagGivenは、--workspaceで
+// workspace_rootが明示的に指定された場合（設定パスが導出されるため
+// 乖離しようがない）、確認プロンプトがスキップされることを確認します。
+func TestRunToolsSync_NoConfirmWhenWorkspaceFlagGiven(t *testing.T) {
+	workspaceDir := t.TempDir()
+	configDir := filepath.Join(workspaceDir, ".sandbox", "config")
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		t.Fatalf("failed to create config dir: %v", err)
+	}
+	approvedDir := filepath.Join(workspaceDir, "approved")
+	if err := os.MkdirAll(approvedDir, 0755); err != nil {
+		t.Fatalf("failed to create approved dir: %v", err)
+	}
+	writeTestConfig(t, configDir, fmt.Sprintf(`
+server:
+  port: 8080
+security:
+  mode: permissive
+host_access:
+  workspace_root: %s
+  host_tools:
+    enabled: true
+    approved_dir: %s
+`, workspaceDir, approvedDir))
+
+	oldCfgFile := cfgFile
+	cfgFile = ""
+	defer func() { cfgFile = oldCfgFile }()
+
+	oldWorkspace := flagToolsWorkspace
+	flagToolsWorkspace = workspaceDir
+	defer func() { flagToolsWorkspace = oldWorkspace }()
+
+	// No input available; if the confirmation prompt were (incorrectly) shown,
+	// scanner.Scan() would return false and the sync would abort.
+	oldInput := confirmWorkspaceRootInput
+	confirmWorkspaceRootInput = strings.NewReader("")
+	defer func() { confirmWorkspaceRootInput = oldInput }()
+
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	err := runToolsSync(toolsSyncCmd, nil)
+
+	w.Close()
+	os.Stdout = oldStdout
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var buf bytes.Buffer
+	buf.ReadFrom(r)
+	output := buf.String()
+
+	if strings.Contains(output, "Sync aborted.") {
+		t.Errorf("sync should not abort when --workspace was given explicitly, got:\n%s", output)
+	}
+}
+

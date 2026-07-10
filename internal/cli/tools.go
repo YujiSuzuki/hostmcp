@@ -6,10 +6,13 @@
 package cli
 
 import (
+	"bufio"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/YujiSuzuki/hostmcp/internal/config"
@@ -46,21 +49,33 @@ var toolsListCmd = &cobra.Command{
 	RunE:  runToolsList,
 }
 
-// flagToolsWorkspace overrides workspace_root for tools commands.
+// flagToolsWorkspace overrides workspace_root for tools commands and, when
+// --config is not given, is also used to derive the config file path.
+// Mutually exclusive with --config; see resolveConfigFile.
 var flagToolsWorkspace string
+
+// flagToolsWorkspaceRoot overrides workspace_root for tools commands without
+// affecting config file resolution. Unlike --workspace, it can be combined
+// with --config — use it to reuse the same hostmcp.yaml across workspaces.
+var flagToolsWorkspaceRoot string
 
 func init() {
 	rootCmd.AddCommand(toolsCmd)
 	toolsCmd.AddCommand(toolsSyncCmd)
 	toolsCmd.AddCommand(toolsListCmd)
 
-	toolsCmd.PersistentFlags().StringVar(&flagToolsWorkspace, "workspace", "", "Workspace root directory (overrides config)")
+	toolsCmd.PersistentFlags().StringVar(&flagToolsWorkspace, "workspace", "", "Workspace root directory; also derives the config file path (mutually exclusive with --config)")
+	toolsCmd.PersistentFlags().StringVar(&flagToolsWorkspaceRoot, "workspace-root", "", "Override workspace_root only, without affecting config file resolution (combinable with --config)")
 }
 
 // runToolsSync performs an interactive sync of host tools.
 // runToolsSyncはホストツールのインタラクティブな同期を実行します。
 func runToolsSync(cmd *cobra.Command, args []string) error {
-	cfg, err := config.Load(cfgFile)
+	resolvedConfig, err := resolveConfigFile(cfgFile, flagToolsWorkspace, "tools sync")
+	if err != nil {
+		return err
+	}
+	cfg, err := config.Load(resolvedConfig)
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
@@ -77,6 +92,9 @@ func runToolsSync(cmd *cobra.Command, args []string) error {
 	if flagToolsWorkspace != "" {
 		workspaceRoot = flagToolsWorkspace
 	}
+	if flagToolsWorkspaceRoot != "" {
+		workspaceRoot = flagToolsWorkspaceRoot
+	}
 	if workspaceRoot == "" {
 		workspaceRoot = "."
 	}
@@ -85,6 +103,19 @@ func runToolsSync(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("resolving workspace path: %w", err)
 	}
 	workspaceRoot = absPath
+
+	// When --config was given directly (not derived from --workspace, and not
+	// explicitly overridden via --workspace-root), workspace_root comes from the
+	// config file and may not match where the operator expects it to point (e.g.
+	// a relative workspace_root resolved against the current directory). Since
+	// sync writes into the approved directory for this workspace, confirm it
+	// before proceeding.
+	if flagToolsWorkspace == "" && flagToolsWorkspaceRoot == "" {
+		if !confirmWorkspaceRoot(workspaceRoot) {
+			fmt.Println("Sync aborted.")
+			return nil
+		}
+	}
 
 	// Set up minimal logging
 	handler := NewColoredHandler(os.Stdout, slog.LevelInfo)
@@ -103,10 +134,44 @@ func runToolsSync(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// confirmWorkspaceRootInput is the source read by confirmWorkspaceRoot,
+// overridable in tests to avoid blocking on the real stdin.
+//
+// confirmWorkspaceRootInputはconfirmWorkspaceRootが読み取る入力元です。
+// 実際のstdinでブロックしないよう、テストでは上書きできます。
+var confirmWorkspaceRootInput io.Reader = os.Stdin
+
+// confirmWorkspaceRoot prints the resolved workspace root and asks the user to
+// confirm it interactively, defaulting to "no" on empty input, EOF, or any
+// answer other than y/yes. Used when workspace_root was not given explicitly
+// via --workspace/--workspace-root (i.e. it came from the --config file as-is)
+// and so may not be what the operator expects.
+//
+// confirmWorkspaceRootは解決済みのworkspace_rootを表示し、対話的に確認を求めます。
+// 空入力・EOF・y/yes以外の入力はすべて「いいえ」として扱います。
+// --workspace/--workspace-rootが指定されていない（つまりworkspace_rootが
+// --configのファイルからそのまま来ている）場合に使用され、
+// 操作者の意図と一致しない可能性があるworkspace_rootを確認します。
+func confirmWorkspaceRoot(workspaceRoot string) bool {
+	fmt.Printf("Workspace: %s\n", workspaceRoot)
+	fmt.Print("Continue with this workspace? [y/N] ")
+
+	scanner := bufio.NewScanner(confirmWorkspaceRootInput)
+	if !scanner.Scan() {
+		return false
+	}
+	answer := strings.TrimSpace(strings.ToLower(scanner.Text()))
+	return answer == "y" || answer == "yes"
+}
+
 // runToolsList shows approved tools information.
 // runToolsListは承認済みツール情報を表示します。
 func runToolsList(cmd *cobra.Command, args []string) error {
-	cfg, err := config.Load(cfgFile)
+	resolvedConfig, err := resolveConfigFile(cfgFile, flagToolsWorkspace, "tools list")
+	if err != nil {
+		return err
+	}
+	cfg, err := config.Load(resolvedConfig)
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
@@ -118,6 +183,9 @@ func runToolsList(cmd *cobra.Command, args []string) error {
 	workspaceRoot := cfg.HostAccess.WorkspaceRoot
 	if flagToolsWorkspace != "" {
 		workspaceRoot = flagToolsWorkspace
+	}
+	if flagToolsWorkspaceRoot != "" {
+		workspaceRoot = flagToolsWorkspaceRoot
 	}
 	if workspaceRoot == "" {
 		workspaceRoot = "."
