@@ -550,3 +550,108 @@ func TestManager_LegacyMode(t *testing.T) {
 		t.Errorf("ListTools returned %d tools, want 1", len(tools))
 	}
 }
+
+// --- PendingApproval tests ---
+
+// TestManager_PendingApproval_LegacyMode verifies that PendingApproval returns
+// nothing in legacy mode, since there is no staging/approval workflow there.
+//
+// TestManager_PendingApproval_LegacyModeは、レガシーモードにはステージング/承認
+// ワークフローが存在しないため、PendingApprovalが何も返さないことを確認します。
+func TestManager_PendingApproval_LegacyMode(t *testing.T) {
+	dir := t.TempDir()
+	toolsDir := filepath.Join(dir, "tools")
+	os.MkdirAll(toolsDir, 0755)
+	os.WriteFile(filepath.Join(toolsDir, "tool1.sh"), []byte("#!/bin/bash\n# tool1.sh\n# First tool\n"), 0755)
+
+	cfg := &config.HostToolsConfig{
+		Enabled:           true,
+		Directories:       []string{"tools"},
+		AllowedExtensions: []string{".sh"},
+		Timeout:           30,
+	}
+	m := NewManager(cfg, dir)
+
+	pending, err := m.PendingApproval()
+	if err != nil {
+		t.Fatalf("PendingApproval error: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Errorf("PendingApproval returned %d items, want 0 in legacy mode", len(pending))
+	}
+}
+
+// TestManager_PendingApproval_NewTool verifies that a tool present in staging
+// but absent from the approved directory is reported as pending (SyncNew).
+//
+// TestManager_PendingApproval_NewToolは、ステージングには存在するが承認済み
+// ディレクトリにはないツールがpending（SyncNew）として報告されることを確認します。
+func TestManager_PendingApproval_NewTool(t *testing.T) {
+	workspaceDir := t.TempDir()
+	approvedBaseDir := t.TempDir()
+
+	stagingDir := filepath.Join(workspaceDir, "host-tools")
+	os.MkdirAll(stagingDir, 0755)
+	os.WriteFile(filepath.Join(stagingDir, "new-tool.sh"),
+		[]byte("#!/bin/bash\n# new-tool.sh\n# A brand new tool\n"), 0755)
+
+	cfg := &config.HostToolsConfig{
+		Enabled:           true,
+		ApprovedDir:       approvedBaseDir,
+		StagingDirs:       []string{"host-tools"},
+		AllowedExtensions: []string{".sh"},
+		Timeout:           30,
+	}
+	m := NewManager(cfg, workspaceDir)
+
+	pending, err := m.PendingApproval()
+	if err != nil {
+		t.Fatalf("PendingApproval error: %v", err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("PendingApproval returned %d items, want 1", len(pending))
+	}
+	if pending[0].Name != "new-tool.sh" {
+		t.Errorf("pending item name = %q, want new-tool.sh", pending[0].Name)
+	}
+	if pending[0].Status != SyncNew {
+		t.Errorf("pending item status = %v, want SyncNew", pending[0].Status)
+	}
+}
+
+// TestManager_PendingApproval_ApprovedNotPending verifies that a tool already
+// approved with matching content is not reported as pending.
+//
+// TestManager_PendingApproval_ApprovedNotPendingは、既に承認済みで内容が一致する
+// ツールがpendingとして報告されないことを確認します。
+func TestManager_PendingApproval_ApprovedNotPending(t *testing.T) {
+	workspaceDir := t.TempDir()
+	approvedBaseDir := t.TempDir()
+
+	content := []byte("#!/bin/bash\n# approved.sh\n# Already approved\n")
+	stagingDir := filepath.Join(workspaceDir, "host-tools")
+	os.MkdirAll(stagingDir, 0755)
+	os.WriteFile(filepath.Join(stagingDir, "approved.sh"), content, 0755)
+
+	projectID := ProjectID(workspaceDir)
+	approvedDir := filepath.Join(approvedBaseDir, projectID)
+	os.MkdirAll(approvedDir, 0755)
+	os.WriteFile(filepath.Join(approvedDir, "approved.sh"), content, 0755)
+
+	cfg := &config.HostToolsConfig{
+		Enabled:           true,
+		ApprovedDir:       approvedBaseDir,
+		StagingDirs:       []string{"host-tools"},
+		AllowedExtensions: []string{".sh"},
+		Timeout:           30,
+	}
+	m := NewManager(cfg, workspaceDir)
+
+	pending, err := m.PendingApproval()
+	if err != nil {
+		t.Fatalf("PendingApproval error: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Errorf("PendingApproval returned %d items, want 0 for unchanged tool", len(pending))
+	}
+}

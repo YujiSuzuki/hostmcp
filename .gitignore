@@ -3,9 +3,12 @@ CommitMsg-draft.md
 ReleaseNotes-draft.md
 
 # Binaries (root only, not cmd/dkmcp/)
+/hostmcp
+/hostmcp.exe
 /dkmcp
 /dkmcp.exe
 dist/
+
 
 # Config files (keep example only)
 dkmcp.yaml

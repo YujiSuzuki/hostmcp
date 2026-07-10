@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/YujiSuzuki/hostmcp/internal/hosttools"
 	"github.com/YujiSuzuki/hostmcp/internal/security"
 )
 
@@ -172,8 +173,125 @@ func (s *Server) initialize(params any) (any, string, string, error) {
 		"capabilities": map[string]any{
 			"tools": map[string]bool{},
 		},
+		"instructions": s.buildInstructions(),
 	}
 	return response, clientName, clientVersion, nil
+}
+
+// buildInstructions returns a dynamic description of HostMCP's capabilities,
+// including the live status of host tools (enabled vs. staged-but-not-yet-approved),
+// for the MCP `initialize` response's `instructions` field. This mirrors sandbox-mcp's
+// buildInstructions() so AI assistants get accurate, self-describing capability info
+// instead of relying on a hardcoded list in CLAUDE.md that can go stale.
+//
+// buildInstructionsはHostMCPの機能の動的な説明を返します。ホストツールの
+// 生きた状態（有効 vs ステージング済みだが未承認）を含み、MCPの`initialize`
+// レスポンスの`instructions`フィールド用です。これはsandbox-mcpの
+// buildInstructions()を模倣しており、AIアシスタントがCLAUDE.md内の
+// 古くなりうるハードコードされたリストに頼らず、正確で自己記述的な機能情報を得られます。
+func (s *Server) buildInstructions() string {
+	var sb strings.Builder
+	sb.WriteString("HostMCP provides controlled access to Docker containers on the host OS ")
+	sb.WriteString("(list_containers, get_logs, exec_command, etc.).\n")
+
+	// hostCommandPolicy (exec_host_command) is configured independently of
+	// hostToolsManager (host_tools vs. host_commands are separate config
+	// sections — see internal/cli/serve.go), so it must be mentioned here
+	// rather than folded into the hostToolsManager checks below, otherwise
+	// deployments with only host_commands enabled would never see it mentioned.
+	// hostCommandPolicy（exec_host_command）はhostToolsManagerとは独立して
+	// 設定されるため（host_toolsとhost_commandsは別々の設定セクション —
+	// internal/cli/serve.go参照）、以下のhostToolsManagerのチェックに
+	// 埋め込まず、ここで言及する必要があります。そうしないと、host_commandsのみ
+	// 有効な環境ではこれが一切案内されなくなります。
+	if s.hostCommandPolicy != nil {
+		sb.WriteString("Whitelisted host OS commands are also available via exec_host_command.\n")
+	}
+
+	if s.hostToolsManager == nil || !s.hostToolsManager.IsEnabled() {
+		return sb.String()
+	}
+
+	// detectionFailed tracks whether ListTools/PendingApproval errored, so we
+	// don't misreport a detection failure as "no host tools configured yet".
+	// detectionFailedはListTools/PendingApprovalがエラーになったかを追跡し、
+	// 検出failureを「ホストツール未設定」と誤って報告しないようにします。
+	var detectionFailed bool
+
+	enabled, err := s.hostToolsManager.ListTools()
+	if err != nil {
+		slog.Debug("buildInstructions: failed to list enabled host tools", "error", err)
+		enabled = nil
+		detectionFailed = true
+	}
+
+	enabledNames := make(map[string]bool, len(enabled))
+	if len(enabled) > 0 {
+		sb.WriteString("\nEnabled host tools (use run_host_tool to execute):\n")
+		for _, t := range enabled {
+			sb.WriteString(fmt.Sprintf("- %s: %s\n", t.Name, t.Description))
+			enabledNames[t.Name] = true
+		}
+		sb.WriteString("\nUse list_host_tools for full details.\n")
+	}
+
+	pending, err := s.hostToolsManager.PendingApproval()
+	if err != nil {
+		slog.Debug("buildInstructions: failed to detect pending host tools", "error", err)
+		detectionFailed = true
+	}
+	if len(pending) > 0 {
+		var lines []string
+		for _, item := range pending {
+			// In --dev mode, staged tools are already loaded by ListTools() and
+			// listed above as enabled — don't list them again as pending too.
+			// This only applies in dev mode: in normal secure mode, ListTools()
+			// reflects the approved directory only, so a name match here means
+			// an already-approved tool's staged copy has since changed (SyncUpdated)
+			// and that update still needs to be surfaced, not hidden.
+			//
+			// devモードでは、ステージング済みツールはListTools()によって既に
+			// 読み込まれ、上でenabledとして表示済みです — pendingとして重複表示
+			// しません。ただしこれはdevモードのみに当てはまります。通常の
+			// セキュアモードでは、ListTools()は承認済みディレクトリのみを反映する
+			// ため、ここで名前が一致するのは「承認済みツールのstaging側がその後
+			// 更新された（SyncUpdated）」ことを意味し、その更新は隠さず表示する
+			// 必要があります。
+			if s.hostToolsManager.IsDevMode() && enabledNames[item.Name] {
+				continue
+			}
+			status := "new"
+			if item.Status == hosttools.SyncUpdated {
+				status = "updated, pending re-approval"
+			}
+			desc := ""
+			if item.Description != "" {
+				desc = ": " + item.Description
+			}
+			lines = append(lines, fmt.Sprintf("- %s (%s)%s\n", item.Name, status, desc))
+		}
+		if len(lines) > 0 {
+			sb.WriteString("\nHost tools staged but not yet enabled (run `hostmcp tools sync` on the host OS to approve):\n")
+			for _, line := range lines {
+				sb.WriteString(line)
+			}
+		}
+	}
+
+	if detectionFailed {
+		sb.WriteString("\nCould not fully determine host tool status (see server logs for details). Use list_host_tools to check directly.\n")
+	} else if len(enabled) == 0 && len(pending) == 0 {
+		sb.WriteString("\nNo host tools are enabled yet. Generic samples (Docker container start/stop/build, etc.) are available at:\n")
+		sb.WriteString("https://github.com/YujiSuzuki/ai-sandbox/tree/main/.sandbox/host-tools\n")
+		sb.WriteString("Copy any into .sandbox/host-tools/")
+		if s.hostToolsManager.IsSecureMode() {
+			sb.WriteString(" and run `hostmcp tools sync` on the host OS to enable them.\n")
+		} else {
+			sb.WriteString(" to make them available.\n")
+		}
+	}
+
+	return sb.String()
 }
 
 // GetTools returns the list of all available MCP tools.

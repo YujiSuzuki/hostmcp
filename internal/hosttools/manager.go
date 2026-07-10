@@ -208,6 +208,38 @@ func (m *Manager) RunTool(name string, args []string) (*Result, error) {
 	return nil, fmt.Errorf("tool not found: %s", name)
 }
 
+// PendingApproval returns the host tools that are staged (in the staging
+// directories) but not yet approved, or whose staged content differs from
+// the currently approved copy. It only applies in secure mode — legacy mode
+// has no staging/approval workflow, so it returns nil.
+//
+// PendingApprovalはステージングディレクトリにあるがまだ承認されていない、
+// またはステージング内容が承認済みコピーと異なるホストツールを返します。
+// セキュアモードでのみ適用されます — レガシーモードには
+// ステージング/承認ワークフローがないため、nilを返します。
+func (m *Manager) PendingApproval() ([]SyncItem, error) {
+	if !m.IsEnabled() {
+		return nil, fmt.Errorf("host tools are disabled")
+	}
+	if !m.IsSecureMode() {
+		return nil, nil
+	}
+
+	syncMgr := NewSyncManager(m.config, m.workspaceRoot)
+	items, err := syncMgr.DetectChanges()
+	if err != nil {
+		return nil, err
+	}
+
+	var pending []SyncItem
+	for _, item := range items {
+		if item.Status != SyncUnchanged {
+			pending = append(pending, item)
+		}
+	}
+	return pending, nil
+}
+
 // resolveDir resolves a directory path relative to workspaceRoot.
 // resolveDirはworkspaceRootからの相対ディレクトリパスを解決します。
 func (m *Manager) resolveDir(dir string) string {
