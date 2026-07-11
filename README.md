@@ -21,6 +21,8 @@ For the AI Sandbox template that uses HostMCP, see [ai-sandbox](https://github.c
   - [Pattern C: Claude Desktop](#pattern-c-claude-desktop-and-other-desktop-ai-apps)
 - [CLI Commands](#cli-commands)
   - [Setup Commands](#setup-commands)
+  - [Current Container Commands](#current-container-commands)
+  - [Host Tools Management Commands](#host-tools-management-commands)
   - [Host OS Commands (Direct Docker Access)](#host-os-commands-direct-docker-access)
   - [Client Commands (Via HTTP API)](#client-commands-via-http-api)
 - [Security Modes](#security-modes)
@@ -32,12 +34,16 @@ For the AI Sandbox template that uses HostMCP, see [ai-sandbox](https://github.c
   - [Permissions](#permissions)
   - [Default Commands (exec_whitelist)](#default-commands-exec_whitelist-)
   - [Dangerous Mode (exec_dangerously)](#dangerous-mode-exec_dangerously)
-  - [Large Output Handling (host_tools)](#large-output-handling-host_tools)
+  - [Host Tools (host_access.host_tools)](#host-tools-host_accesshost_tools)
+  - [Host Commands (host_access.host_commands)](#host-commands-host_accesshost_commands)
+  - [Logging](#logging)
+  - [Audit Logging (audit)](#audit-logging-audit)
 - [Architecture](#architecture)
 - [Design Philosophy](#design-philosophy)
 - [Provided MCP Tools](#provided-mcp-tools)
 - [Troubleshooting](#troubleshooting)
 - [License](#license)
+- [Acknowledgments](#acknowledgments)
 
 ---
 
@@ -55,6 +61,8 @@ For the AI Sandbox template that uses HostMCP, see [ai-sandbox](https://github.c
 ## Installation
 
 Run on the host OS.
+
+**Prerequisites:** Go 1.25 or later (only needed for `go install` / building from source), and Docker Engine (Docker Desktop or OrbStack) running on the host.
 
 **Go Install (Recommended)**
 ```bash
@@ -150,8 +158,12 @@ security:
 
 ```bash
 # Run on host OS
-hostmcp serve --config hostmcp.yaml
+hostmcp serve --config .sandbox/config/hostmcp.yaml
 ```
+
+> **Alternative:** If you copied the example config manually instead of using `hostmcp init`, point `--config` at that file instead, e.g. `hostmcp serve --config hostmcp.yaml`.
+
+> **Sponsor message:** `hostmcp serve` prints a short sponsor message at startup. Pass `--no-thanks` to suppress it.
 
 Output looks like:
 ```
@@ -169,6 +181,7 @@ Use the `-v` flag to increase log verbosity for debugging:
 hostmcp serve --config hostmcp.yaml -v      # Level 1: JSON request/response output
 hostmcp serve --config hostmcp.yaml -vv     # Level 2: DEBUG level + JSON output
 hostmcp serve --config hostmcp.yaml -vvv    # Level 3: Full debug (all noise shown)
+hostmcp serve --config hostmcp.yaml -vvvv   # Level 4: Full debug + HTTP headers
 ```
 
 | Level | Flag | Description |
@@ -177,6 +190,7 @@ hostmcp serve --config hostmcp.yaml -vvv    # Level 3: Full debug (all noise sho
 | 1 | `-v` | JSON request/response display, uninitialized connections filtered |
 | 2 | `-vv` | DEBUG level + JSON output, uninitialized connections filtered |
 | 3 | `-vvv` | Full debug, all connections shown including noise |
+| 4 | `-vvvv` | Full debug plus raw HTTP headers |
 
 **Note:** "Noise" refers to uninitialized SSE connections (e.g., VS Code extension probes). Levels 0-2 filter these to keep logs clean.
 
@@ -306,6 +320,46 @@ hostmcp init --workspace /path/to/workspace --port 18080
 hostmcp init --workspace /path/to/workspace --force
 ```
 
+> **`--config` vs `--workspace`:** `hostmcp serve`, `hostmcp tools sync`, and `hostmcp tools list` all require either `--config <path>` or `--workspace <path>` (mutually exclusive). If `--workspace` is given, the config file is derived as `{workspace}/.sandbox/config/hostmcp.yaml`. `workspace_root` (see [Host Tools](#host-tools-host_accesshost_tools)) is the directory HostMCP treats as the project root for staging/approving host tools and resolving relative paths — normally it comes from `--workspace`, or from the config file's own `host_access.workspace_root` when `--config` is used directly. To reuse the same `hostmcp.yaml` (via `--config`) while pointing at a different workspace directory, use `--workspace-root` instead — it only overrides `workspace_root` and does not affect config resolution.
+
+### Current Container Commands
+
+The "current container" feature (`cli.current_container` in config, enabled by default) lets you set a default container so you don't need `-c`/`--container` on every command:
+
+```bash
+# Set the current container
+hostmcp use myapp-api
+
+# logs/stats/exec now default to the current container
+hostmcp logs
+hostmcp stats
+hostmcp exec "npm test"
+
+# Clear the current container
+hostmcp use --clear
+```
+
+> **Security note:** In non-sandboxed environments where an AI assistant could run CLI commands directly on the host OS (not through MCP), the current-container feature could lead to unintended behavior. Set `cli.current_container.enabled: false` in that case.
+
+### Host Tools Management Commands
+
+Host tools placed in staging directories (e.g. `.sandbox/host-tools/`) must be approved before HostMCP will run them:
+
+```bash
+# Interactively review and approve staged host tools
+hostmcp tools sync
+
+# Same, but starting the server immediately after sync
+hostmcp serve --sync
+
+# List currently approved and pending host tools
+hostmcp tools list
+```
+
+> **Note:** If `workspace_root` was not given explicitly via `--workspace`/`--workspace-root` (i.e. it came from the `--config` file as-is), `hostmcp tools sync` first asks you to confirm the resolved workspace (`Continue with this workspace? [y/N]`) before approving anything. It defaults to **no** on empty input or EOF, so running it non-interactively (e.g. in CI) without `--workspace`/`--workspace-root` will abort rather than sync.
+
+> **Development mode:** `hostmcp serve --dev` also loads tools straight from `staging_dirs`, bypassing the `hostmcp tools sync` approval step (precedence: staging > approved > common). Convenient while iterating on a host tool locally; avoid in shared or production-like environments since it skips human review.
+
 ### Host OS Commands (Direct Docker Access)
 
 These access the Docker socket directly and must be run **on the host OS**:
@@ -318,7 +372,7 @@ hostmcp list
 hostmcp logs myapp-api --tail 100
 
 # Execute a whitelisted command
-hostmcp exec myapp-api "npm test"
+hostmcp exec -c myapp-api "npm test"
 
 # Show container details with summary (default)
 hostmcp inspect myapp-api
@@ -329,6 +383,8 @@ hostmcp inspect myapp-api --json
 # Get container stats
 hostmcp stats myapp-api
 ```
+
+> **Note:** Unlike `logs`/`inspect`/`stats`, `exec` takes the command to run as its positional argument, so the container must be given via `-c`/`--container` (or omitted if a [current container](#current-container-commands) is set).
 
 **`list` output example:**
 ```
@@ -489,6 +545,15 @@ security:
         settings_files:
           - ".claude/settings.json"
           - ".claude/settings.local.json"
+
+      # Import from Gemini Code Assist exclusion files (.aiexclude, .geminiignore)
+      # Same shape as claude_code_settings above; enabled by default.
+      gemini_settings:
+        enabled: true
+        max_depth: 1
+        settings_files:
+          - ".aiexclude"
+          - ".geminiignore"
 ```
 
 #### max_depth Behavior
@@ -612,10 +677,11 @@ Control globally allowed operations:
 ```yaml
 security:
   permissions:
-    logs: true      # Allow log retrieval (get_logs, search_logs)
-    inspect: true   # Allow container inspection
-    stats: true     # Allow resource statistics
-    exec: true      # Allow exec execution (subject to exec_whitelist)
+    logs: true       # Allow log retrieval (get_logs, search_logs)
+    inspect: true    # Allow container inspection
+    stats: true      # Allow resource statistics
+    exec: true       # Allow exec execution (subject to exec_whitelist)
+    lifecycle: false # Allow start/stop/restart_container (disabled by default)
 ```
 
 ### Default Commands (exec_whitelist `"*"`)
@@ -638,6 +704,8 @@ security:
 ```
 
 > **Security warning:** Do not add `env`, `printenv`, or `echo *` to the default whitelist. These can expose all environment variables, including secrets.
+
+> **Temporary commands:** `hostmcp serve --allow-exec <container:command>` adds a command to `exec_whitelist` for the running server only, without editing the config file. Useful for a one-off debugging session. Repeat the flag for multiple entries.
 
 ### Dangerous Mode (exec_dangerously)
 
@@ -711,7 +779,7 @@ These flags:
 **CLI:**
 ```bash
 # Direct (host OS)
-hostmcp exec --dangerously securenote-api "tail -100 /var/log/app.log"
+hostmcp exec --dangerously -c securenote-api "tail -100 /var/log/app.log"
 
 # Client (AI Sandbox)
 hostmcp client exec --dangerously --url http://host.docker.internal:18080 securenote-api "tail -100 /var/log/app.log"
@@ -775,16 +843,44 @@ securenote-api      tail
 Note: Commands with '*' wildcard match any suffix. Dangerous commands require dangerously=true parameter.
 ```
 
-### Large Output Handling (host_tools)
+### Host Tools (host_access.host_tools)
 
-When a host tool produces output exceeding `max_output_bytes`, HostMCP saves the full output to a file and returns a path and preview to the AI instead. This prevents large build logs or test reports from overflowing the AI's context window.
+Host tools are approved scripts that AI assistants can run on the host OS via `run_host_tool`. Tools staged in a workspace directory must be approved with `hostmcp tools sync` before they can run (see [Host Tools Management Commands](#host-tools-management-commands)).
 
 ```yaml
 host_access:
+  workspace_root: "."
+
   host_tools:
+    enabled: true
+
+    # Approved tools directory (outside workspace, not writable by AI)
+    # Tools are organized per-project: <approved_dir>/<project-id>/
+    # <project-id> is derived automatically from the workspace path
+    # (format: <dir-name>-<short-hash>, e.g. "my-project-a1b2c3d4") — run
+    # `hostmcp tools list` to see the resolved value for your workspace.
+    approved_dir: "~/.hostmcp/host-tools"
+
+    # Staging directories where new tools are proposed (inside workspace)
+    staging_dirs:
+      - ".sandbox/host-tools"
+
+    # Load tools from _common/ subdirectory of approved_dir (shared across projects)
+    common: true
+
+    allowed_extensions:
+      - ".sh"
+      - ".go"
+      - ".py"
+    timeout: 60  # seconds
+
     max_output_bytes: 102400  # 100 KB; set to 0 to disable
     large_output_dir: ".sandbox/tmp"  # relative to workspace root
 ```
+
+#### Large Output Handling
+
+When a host tool produces output exceeding `max_output_bytes`, HostMCP saves the full output to a file and returns a path and preview to the AI instead. This prevents large build logs or test reports from overflowing the AI's context window.
 
 The AI receives a message like this:
 
@@ -801,6 +897,95 @@ Use the Read or Grep tool to inspect the full output.
 ```
 
 > **Note:** Each tool run overwrites the previous file (`hostmcp-<toolname>-last.log`), so only the most recent output is kept.
+
+### Host Commands (host_access.host_commands)
+
+Separately from host tools, HostMCP can allow whitelisted CLI commands to be executed directly on the host OS via the `exec_host_command` MCP tool. This is disabled by default.
+
+```yaml
+host_access:
+  host_commands:
+    enabled: false
+
+    # Whitelisted commands (base command → allowed argument patterns)
+    # Use "*" suffix for prefix matching, e.g. "-i *" matches "-i :8080"
+    whitelist:
+      "df":
+        - "-h"
+      "free":
+        - "-m"
+      "lsof":
+        - "-i *"
+
+    # Deny list (overrides whitelist)
+    # deny:
+    #   "some-command":
+    #     - "dangerous-subcommand *"
+
+    # Dangerous mode: allowed only when exec_host_command is called with dangerously=true
+    dangerously:
+      enabled: false
+      commands:
+        "kill":
+          - "*"
+```
+
+> **Server startup flag:** `hostmcp serve --host-dangerously` sets `host_access.host_commands.dangerously.enabled = true` at startup, without editing the config file. Same opt-in intent as `--dangerously`/`--dangerously-all` for `exec_dangerously`.
+
+> **Note:** `docker`/`docker-compose` commands are not needed here — inspection/monitoring is already covered by `list_containers`, `get_logs`, `get_stats`, and `inspect_container`. For lifecycle operations (`docker-compose up/down/build`), use host tools instead (e.g. wrap them in `.sandbox/host-tools/app-up.sh`).
+
+### Logging
+
+Server logging is configured via CLI flags rather than the config file's `logging.level` key alone:
+
+```bash
+hostmcp serve --config hostmcp.yaml --log-level debug --log-file server.log --log-also-stdout
+```
+
+| Flag | Description |
+|------|-------------|
+| `--log-level` | `debug`, `info`, `warn`, or `error` |
+| `--log-file` | Write logs to this file path |
+| `--log-also-stdout` | Also print logs to stdout when `--log-file` is set |
+
+### Audit Logging (audit)
+
+Audit logs record security-relevant events (tool calls, access denials, client connections, security policy queries) as structured JSON for monitoring and compliance. Disabled by default.
+
+```yaml
+audit:
+  enabled: false
+
+  # Required when enabled is true. Always written to a file (never stdout).
+  # Supports "~/" prefix for home directory expansion.
+  file: "~/.hostmcp/audit.log"
+
+  # Rotation on server startup: audit.log -> audit.log.1 -> audit.log.2 ...
+  # Files beyond 'keep' are deleted. Set keep: 0 to disable rotation.
+  rotation:
+    keep: 3
+
+  events:
+    tool_calls: true          # exec_command, get_logs, read_file, etc.
+    access_denied: true       # blocked paths, disallowed commands, permission errors
+    client_connections: true  # client connect/disconnect
+    security_policy: false    # get_security_policy, get_blocked_paths queries
+```
+
+Example audit log entry:
+
+```json
+{
+  "time": "2024-01-15T10:30:45.123Z",
+  "level": "INFO",
+  "msg": "audit_event",
+  "event_type": "tool_call",
+  "tool": "exec_command",
+  "container": "myapp-api",
+  "result": "success",
+  "details": {"command": "npm test", "duration_ms": 1234}
+}
+```
 
 ## Architecture
 
@@ -855,7 +1040,7 @@ Human = hands (execute infrastructure changes)
 
 ### Graduated Access Model
 
-HostMCP provides four levels of access, each more permissive than the last:
+HostMCP provides five levels of access, each more permissive than the last:
 
 | Level | Operations | Default | Risk |
 |-------|-----------|---------|------|
@@ -980,6 +1165,8 @@ Each level can be enabled independently, letting you choose the right balance of
 | `get_host_tool_info` | Get detailed info about a host tool |
 | `run_host_tool` | Execute an approved host tool |
 | `exec_host_command` | Execute a whitelisted host CLI command |
+
+> **Dynamic capability info:** The MCP `initialize` response also includes an `instructions` field summarizing the live host tool status (enabled tools, newly staged tools awaiting approval, and tools whose staged content changed since approval), generated fresh on each connection instead of relying on this static table alone.
 
 ## Troubleshooting
 

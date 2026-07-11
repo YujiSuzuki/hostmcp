@@ -744,7 +744,12 @@ func writeBanner(w io.Writer) {
 	fmt.Fprintln(w, `  /_\ |_ _| / __| __ _ _ _  _| | |__  _____ __`)
 	fmt.Fprintln(w, ` / _ \ | |  \__ \/ _`+"`"+` | ' \/ _`+"`"+` | '_ \/ _ \ \ /`)
 	fmt.Fprintln(w, `/_/ \_\___| |___/\__,_|_||_\__,_|_.__/\___/_\_\`)
-	fmt.Fprintf(w, "              + HostMCP + SandboxMCP  %s\n", Version)
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, ` _   _              _     __  __    ___   ___ `)
+	fmt.Fprintln(w, `| |_| |  ___   ___ | |_  |  \/  |  / __| | _ \`)
+	fmt.Fprintln(w, `| ___ | / _ \ (_-< |  _| | |\/| | | (__  |  _/`)
+	fmt.Fprintln(w, `|_| |_| \___/ /__/  \__| |_|  |_|  \___| |_|  `)
+	fmt.Fprintf(w, "                         %s\n", Version)
 }
 
 // showSponsorMessage displays a GitHub Sponsors message to stdout.
@@ -776,16 +781,12 @@ func writeSponsorMessage(w io.Writer) bool {
 	fmt.Fprintln(w)
 	if strings.HasPrefix(lang, "ja_JP") {
 		fmt.Fprintln(w, "💖 このプロジェクトを応援")
-		fmt.Fprintln(w, "  AI Sandbox が役に立ったら、スポンサーになって応援してください！")
+		fmt.Fprintln(w, "  HostMCP が役に立ったら、スポンサーになって応援してください！")
 		fmt.Fprintf(w, "  %s\n", sponsorURL)
-		fmt.Fprintln(w)
-		fmt.Fprintln(w, "  非表示にするには: hostmcp serve --no-thanks")
 	} else {
 		fmt.Fprintln(w, "💖 Support this project")
-		fmt.Fprintln(w, "  If you find AI Sandbox useful, consider sponsoring!")
+		fmt.Fprintln(w, "  If you find HostMCP useful, consider sponsoring!")
 		fmt.Fprintf(w, "  %s\n", sponsorURL)
-		fmt.Fprintln(w)
-		fmt.Fprintln(w, "  To hide this message: hostmcp serve --no-thanks")
 	}
 	fmt.Fprintln(w)
 	return true

@@ -888,14 +888,14 @@ func TestWriteBanner(t *testing.T) {
 
 	// Verify banner contains key elements.
 	// バナーにキー要素が含まれていることを確認します。
-	if !strings.Contains(output, "Sandbox") {
-		t.Error("Expected banner to contain 'Sandbox' in ASCII art")
+	if !strings.Contains(output, `___/_\_\`) {
+		t.Error("Expected banner to contain the AI Sandbox ASCII art")
 	}
-	if !strings.Contains(output, "HostMCP") {
-		t.Error("Expected banner to contain 'HostMCP'")
+	if !strings.Contains(output, `___   ___`) {
+		t.Error("Expected banner to contain the HostMCP ASCII art")
 	}
-	if !strings.Contains(output, "SandboxMCP") {
-		t.Error("Expected banner to contain 'SandboxMCP'")
+	if !strings.Contains(output, Version) {
+		t.Error("Expected banner to contain the version string")
 	}
 }
 
@@ -993,9 +993,6 @@ func TestWriteSponsorMessage(t *testing.T) {
 				}
 				if !strings.Contains(output, "github.com/sponsors/YujiSuzuki") {
 					t.Error("Expected output to contain sponsor URL")
-				}
-				if !strings.Contains(output, "--no-thanks") {
-					t.Error("Expected output to contain --no-thanks hint")
 				}
 			} else {
 				if wrote {
