@@ -69,7 +69,8 @@ HostMCP を使用する AI Sandbox テンプレートについては [ai-sandbox
 go install github.com/YujiSuzuki/hostmcp@latest
 ```
 
-<!-- バイナリリリースは近日公開予定
+**ビルド済みバイナリ（Go不要）**
+
 **macOS (Apple Silicon)**
 ```bash
 curl -L https://github.com/YujiSuzuki/hostmcp/releases/latest/download/hostmcp_darwin_arm64 -o hostmcp
@@ -95,7 +96,6 @@ curl -L https://github.com/YujiSuzuki/hostmcp/releases/latest/download/hostmcp_l
 chmod +x hostmcp
 sudo mv hostmcp /usr/local/bin/
 ```
--->
 
 **ソースからビルド**
 ```bash

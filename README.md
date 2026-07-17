@@ -69,7 +69,8 @@ Run on the host OS.
 go install github.com/YujiSuzuki/hostmcp@latest
 ```
 
-<!-- Binary releases coming soon
+**Prebuilt Binary (no Go required)**
+
 **macOS (Apple Silicon)**
 ```bash
 curl -L https://github.com/YujiSuzuki/hostmcp/releases/latest/download/hostmcp_darwin_arm64 -o hostmcp
@@ -95,7 +96,6 @@ curl -L https://github.com/YujiSuzuki/hostmcp/releases/latest/download/hostmcp_l
 chmod +x hostmcp
 sudo mv hostmcp /usr/local/bin/
 ```
--->
 
 **Build from Source**
 ```bash
