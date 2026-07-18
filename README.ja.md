@@ -458,7 +458,7 @@ hostmcp client exec securenote-api "npm run build"
 
 | フラグ | 環境変数 | デフォルト | 説明 |
 |--------|---------|-----------|------|
-| `--url` | `HOSTMCP_SERVER_URL` | `http://host.docker.internal:18080` | HostMCPサーバーのURL |
+| `--url` | `HOSTMCP_SERVER_URL` | `hostmcp.yaml` の `server.port` から自動検出（無ければ `http://host.docker.internal:18080`） | HostMCPサーバーのURL |
 | `--client-suffix` / `-s` | `HOSTMCP_CLIENT_SUFFIX` | (なし) | クライアント名に追加するサフィックス |
 | `--timeout` | `HOSTMCP_TIMEOUT` | `30` | HTTPリクエストおよびツール呼び出しレスポンスのタイムアウト（秒） |
 

@@ -20,10 +20,24 @@
 //
 //   - TestServerURLEnvVar: Tests environment variable priority logic
 //     環境変数の優先順位ロジックをテスト
+//   - TestServerURLConfigPortFallback: Tests the config-derived server.port
+//     fallback and its precedence against --url/HOSTMCP_SERVER_URL
+//     config由来のserver.portフォールバックと、--url/HOSTMCP_SERVER_URLに
+//     対する優先順位をテスト
+//   - TestServerURLConfigPortFallbackLogsSource: Tests that the resolved
+//     config path is logged to stderr only when the config-derived port is used
+//     config由来のポートが使われた場合のみ、解決したconfigパスがstderrに
+//     出力されることをテスト
+//   - TestResolveClientServerPort: Tests resolveClientServerPort's workspace
+//     resolution order and lenient failure behavior
+//     resolveClientServerPortのワークスペース解決順序と寛容な失敗時の
+//     挙動をテスト
+//   - TestIsJapaneseLocale: Tests LC_ALL/LANG precedence and the "ja_JP"
+//     prefix check used for locale-aware flag help text
+//     ロケール依存のフラグヘルプ文字列に使うLC_ALL/LANGの優先順位と
+//     "ja_JP"接頭辞判定をテスト
 //   - TestExtractJSONFromMarkdown: Tests JSON extraction from markdown
 //     MarkdownからのJSON抽出をテスト
-//   - TestParseExitCode: Tests exit code parsing
-//     終了コード解析をテスト
 //
 // The actual client communication is tested in internal/client/client_test.go
 // which covers SSE connections, tool calls, and error handling.
@@ -32,7 +46,11 @@
 package cli
 
 import (
+	"bytes"
+	"io"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -93,6 +111,43 @@ func TestClientURLFlag(t *testing.T) {
 	}
 }
 
+// Verifies LC_ALL/LANG precedence and the "ja_JP" prefix check used to pick
+// between English and Japanese flag help text in init().
+//
+// init()内のフラグヘルプ文字列を英語/日本語で切り替えるために使う
+// LC_ALL/LANGの優先順位と"ja_JP"接頭辞判定を確認します。
+func TestIsJapaneseLocale(t *testing.T) {
+	tests := []struct {
+		name     string
+		lcAll    string
+		lang     string
+		expected bool
+	}{
+		{"LC_ALL ja_JP takes precedence over non-Japanese LANG", "ja_JP.UTF-8", "en_US.UTF-8", true},
+		{"LANG ja_JP used when LC_ALL is unset", "", "ja_JP.UTF-8", true},
+		{"neither is Japanese", "en_US.UTF-8", "en_US.UTF-8", false},
+		{"both unset", "", "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			originalLCAll := os.Getenv("LC_ALL")
+			originalLang := os.Getenv("LANG")
+			defer func() {
+				os.Setenv("LC_ALL", originalLCAll)
+				os.Setenv("LANG", originalLang)
+			}()
+
+			os.Setenv("LC_ALL", tt.lcAll)
+			os.Setenv("LANG", tt.lang)
+
+			if got := isJapaneseLocale(); got != tt.expected {
+				t.Errorf("isJapaneseLocale() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
+}
+
 // TestClientSubcommands verifies that all expected subcommands are registered.
 // This ensures the client command group is complete.
 //
@@ -134,9 +189,9 @@ func TestClientSubcommands(t *testing.T) {
 	}
 }
 
-// TestClientListCommand verifies that the client list subcommand is properly configured.
+// Verifies that the client list subcommand is properly configured.
 //
-// TestClientListCommandはclient listサブコマンドが適切に設定されていることを確認します。
+// client listサブコマンドが適切に設定されていることを確認します。
 func TestClientListCommand(t *testing.T) {
 	// Test that client list command is registered.
 	// client listコマンドが登録されていることをテストします。
@@ -151,9 +206,9 @@ func TestClientListCommand(t *testing.T) {
 	}
 }
 
-// TestClientLogsCommand verifies that the client logs subcommand is properly configured.
+// Verifies that the client logs subcommand is properly configured.
 //
-// TestClientLogsCommandはclient logsサブコマンドが適切に設定されていることを確認します。
+// client logsサブコマンドが適切に設定されていることを確認します。
 func TestClientLogsCommand(t *testing.T) {
 	// Test that client logs command is registered.
 	// client logsコマンドが登録されていることをテストします。
@@ -168,9 +223,9 @@ func TestClientLogsCommand(t *testing.T) {
 	}
 }
 
-// TestClientLogsTailFlag verifies that the --tail flag is properly configured on client logs command.
+// Verifies that the --tail flag is properly configured on client logs command.
 //
-// TestClientLogsTailFlagはclient logsコマンドの--tailフラグが適切に設定されていることを確認します。
+// client logsコマンドの--tailフラグが適切に設定されていることを確認します。
 func TestClientLogsTailFlag(t *testing.T) {
 	// Check that tail flag exists.
 	// tailフラグが存在することを確認します。
@@ -192,9 +247,9 @@ func TestClientLogsTailFlag(t *testing.T) {
 	}
 }
 
-// TestClientLogsSinceFlag verifies that the --since flag is properly configured on client logs command.
+// Verifies that the --since flag is properly configured on client logs command.
 //
-// TestClientLogsSinceFlagはclient logsコマンドの--sinceフラグが適切に設定されていることを確認します。
+// client logsコマンドの--sinceフラグが適切に設定されていることを確認します。
 func TestClientLogsSinceFlag(t *testing.T) {
 	// Check that since flag exists.
 	// sinceフラグが存在することを確認します。
@@ -216,9 +271,9 @@ func TestClientLogsSinceFlag(t *testing.T) {
 	}
 }
 
-// TestClientLogsFollowFlag verifies that the --follow flag is properly configured on client logs command.
+// Verifies that the --follow flag is properly configured on client logs command.
 //
-// TestClientLogsFollowFlagはclient logsコマンドの--followフラグが適切に設定されていることを確認します。
+// client logsコマンドの--followフラグが適切に設定されていることを確認します。
 func TestClientLogsFollowFlag(t *testing.T) {
 	// Check that follow flag exists.
 	// followフラグが存在することを確認します。
@@ -240,9 +295,9 @@ func TestClientLogsFollowFlag(t *testing.T) {
 	}
 }
 
-// TestClientExecCommand verifies that the client exec subcommand is properly configured.
+// Verifies that the client exec subcommand is properly configured.
 //
-// TestClientExecCommandはclient execサブコマンドが適切に設定されていることを確認します。
+// client execサブコマンドが適切に設定されていることを確認します。
 func TestClientExecCommand(t *testing.T) {
 	// Test that client exec command is registered.
 	// client execコマンドが登録されていることをテストします。
@@ -257,9 +312,9 @@ func TestClientExecCommand(t *testing.T) {
 	}
 }
 
-// TestClientStatsCommand verifies that the client stats subcommand is properly configured.
+// Verifies that the client stats subcommand is properly configured.
 //
-// TestClientStatsCommandはclient statsサブコマンドが適切に設定されていることを確認します。
+// client statsサブコマンドが適切に設定されていることを確認します。
 func TestClientStatsCommand(t *testing.T) {
 	// Test that client stats command is registered.
 	// client statsコマンドが登録されていることをテストします。
@@ -274,9 +329,9 @@ func TestClientStatsCommand(t *testing.T) {
 	}
 }
 
-// TestClientInspectCommand verifies that the client inspect subcommand is properly configured.
+// Verifies that the client inspect subcommand is properly configured.
 //
-// TestClientInspectCommandはclient inspectサブコマンドが適切に設定されていることを確認します。
+// client inspectサブコマンドが適切に設定されていることを確認します。
 func TestClientInspectCommand(t *testing.T) {
 	// Test that client inspect command is registered.
 	// client inspectコマンドが登録されていることをテストします。
@@ -361,14 +416,36 @@ func TestClientSuffixEnvVar(t *testing.T) {
 			// 元の状態を保存して復元します。
 			originalSuffix := clientSuffix
 			originalEnv := os.Getenv("HOSTMCP_CLIENT_SUFFIX")
+			originalURL := serverURL
+			originalCfgFile := cfgFile
+			originalWorkspaceEnv := os.Getenv("WORKSPACE")
 			defer func() {
 				clientSuffix = originalSuffix
 				os.Setenv("HOSTMCP_CLIENT_SUFFIX", originalEnv)
+				serverURL = originalURL
+				cfgFile = originalCfgFile
+				os.Setenv("WORKSPACE", originalWorkspaceEnv)
 			}()
 
 			// Reset clientSuffix to default (empty).
 			// clientSuffixをデフォルト（空）にリセットします。
 			clientSuffix = ""
+
+			// This test's fresh cmd below has no "url" flag registered, so
+			// PersistentPreRunE's cmd.Flags().Changed("url") is always false
+			// here, meaning the URL/config-port fallback branch still runs
+			// even though this test isn't about URLs. Point $WORKSPACE at an
+			// empty temp dir so it doesn't read the real
+			// /workspace/.sandbox/config/hostmcp.yaml as a side effect.
+			//
+			// このテストの下記の新しいcmdには"url"フラグが登録されていないため、
+			// PersistentPreRunEのcmd.Flags().Changed("url")は常にfalseになり、
+			// このテストがURLに関するものでなくてもURL/config-portフォールバック
+			// 分岐が実行されてしまいます。実際の
+			// /workspace/.sandbox/config/hostmcp.yamlを副作用として読まないよう、
+			// $WORKSPACEを空の一時ディレクトリに向けます。
+			cfgFile = ""
+			os.Setenv("WORKSPACE", t.TempDir())
 
 			// Set environment variable.
 			// 環境変数を設定します。
@@ -447,14 +524,38 @@ func TestServerURLEnvVar(t *testing.T) {
 			// 元の状態を保存して復元します。
 			originalURL := serverURL
 			originalEnv := os.Getenv("HOSTMCP_SERVER_URL")
+			originalCfgFile := cfgFile
+			originalWorkspaceEnv := os.Getenv("WORKSPACE")
 			defer func() {
 				serverURL = originalURL
 				os.Setenv("HOSTMCP_SERVER_URL", originalEnv)
+				cfgFile = originalCfgFile
+				os.Setenv("WORKSPACE", originalWorkspaceEnv)
 			}()
 
 			// Reset serverURL to default.
 			// serverURLをデフォルトにリセットします。
 			serverURL = defaultURL
+
+			// Point the config-port fallback ($WORKSPACE) at an empty temp
+			// dir (no hostmcp.yaml inside), so this test is isolated from
+			// the real /workspace/.sandbox/config/hostmcp.yaml — this repo's
+			// own devcontainer actually has that file (server.port: 8180),
+			// and without this isolation the "default used when neither set"
+			// case would pick up the real port instead of the hardcoded
+			// default, since resolveClientServerPort falls back to
+			// "/workspace" when cfgFile is empty and $WORKSPACE is unset.
+			//
+			// config-portフォールバック（$WORKSPACE）の参照先を、hostmcp.yamlが
+			// 存在しない空の一時ディレクトリに向けます。これにより、実際の
+			// /workspace/.sandbox/config/hostmcp.yaml（このリポジトリの
+			// devcontainer自体が持つserver.port: 8180の設定ファイル）から
+			// このテストを隔離します。この隔離がないと、
+			// resolveClientServerPortはcfgFileが空で$WORKSPACEも未設定の場合
+			// "/workspace"にフォールバックするため、「neither set」ケースが
+			// ハードコードされたデフォルトではなく実際のポートを拾ってしまいます。
+			cfgFile = ""
+			os.Setenv("WORKSPACE", t.TempDir())
 
 			// Set environment variable.
 			// 環境変数を設定します。
@@ -485,6 +586,282 @@ func TestServerURLEnvVar(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Verifies that server.port from a resolved hostmcp.yaml is used as the URL
+// fallback when neither --url nor HOSTMCP_SERVER_URL is set, and that it is
+// correctly out-ranked by both.
+//
+// --urlもHOSTMCP_SERVER_URLも設定されていない場合にhostmcp.yamlから
+// 解決したserver.portがURLフォールバックとして使われること、
+// およびそれが両者より優先順位が低いことを確認します。
+func TestServerURLConfigPortFallback(t *testing.T) {
+	const defaultURL = "http://host.docker.internal:18080"
+
+	tmpDir := t.TempDir()
+	cfgDir := filepath.Join(tmpDir, ".sandbox", "config")
+	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+		t.Fatalf("failed to create config dir: %v", err)
+	}
+	cfgPath := filepath.Join(cfgDir, "hostmcp.yaml")
+	if err := os.WriteFile(cfgPath, []byte("server:\n  port: 8180\n"), 0o644); err != nil {
+		t.Fatalf("failed to write config: %v", err)
+	}
+
+	tests := []struct {
+		name        string
+		envValue    string
+		flagArgs    []string
+		expectedURL string
+	}{
+		{
+			name:        "config port used when neither url flag nor env var set",
+			envValue:    "",
+			flagArgs:    nil,
+			expectedURL: "http://host.docker.internal:8180",
+		},
+		{
+			name:        "env var takes precedence over config port",
+			envValue:    "http://localhost:9090",
+			flagArgs:    nil,
+			expectedURL: "http://localhost:9090",
+		},
+		{
+			name:        "url flag takes precedence over config port",
+			envValue:    "",
+			flagArgs:    []string{"--url", "http://custom:7070"},
+			expectedURL: "http://custom:7070",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			originalURL := serverURL
+			originalEnv := os.Getenv("HOSTMCP_SERVER_URL")
+			originalCfgFile := cfgFile
+			originalWorkspaceEnv := os.Getenv("WORKSPACE")
+			originalSuffix := clientSuffix
+			originalTimeout := clientTimeout
+			defer func() {
+				serverURL = originalURL
+				os.Setenv("HOSTMCP_SERVER_URL", originalEnv)
+				cfgFile = originalCfgFile
+				os.Setenv("WORKSPACE", originalWorkspaceEnv)
+				clientSuffix = originalSuffix
+				clientTimeout = originalTimeout
+			}()
+
+			serverURL = defaultURL
+			cfgFile = ""
+			os.Setenv("WORKSPACE", tmpDir)
+
+			if tt.envValue != "" {
+				os.Setenv("HOSTMCP_SERVER_URL", tt.envValue)
+			} else {
+				os.Unsetenv("HOSTMCP_SERVER_URL")
+			}
+
+			cmd := &cobra.Command{Use: "test"}
+			cmd.PersistentFlags().StringVar(&serverURL, "url", defaultURL, "")
+			if tt.flagArgs != nil {
+				cmd.SetArgs(tt.flagArgs)
+				cmd.ParseFlags(tt.flagArgs)
+			}
+
+			if err := clientCmd.PersistentPreRunE(cmd, []string{}); err != nil {
+				t.Fatalf("PersistentPreRunE returned error: %v", err)
+			}
+
+			if serverURL != tt.expectedURL {
+				t.Errorf("serverURL = %q, want %q", serverURL, tt.expectedURL)
+			}
+		})
+	}
+}
+
+// Verifies that PersistentPreRunE prints the resolved hostmcp.yaml path to
+// stderr whenever it uses the config-derived port, so an unexpected port
+// picked up from a stray config file (e.g. at the fallback "/workspace"
+// path) is traceable rather than silent. It must NOT print anything when
+// --url or HOSTMCP_SERVER_URL already determined the URL, since
+// resolveClientServerPort isn't even called in those cases.
+//
+// config由来のポートが使われる際にPersistentPreRunEが解決した
+// hostmcp.yamlのパスをstderrに出力することを確認します。
+// これにより、想定外の場所（フォールバック先の"/workspace"にたまたま存在した
+// configなど）から拾ったポートも無警告にはなりません。--urlやHOSTMCP_SERVER_URL
+// で既にURLが決まっている場合は、resolveClientServerPort自体が呼ばれないため
+// 何も出力されないことも確認します。
+func TestServerURLConfigPortFallbackLogsSource(t *testing.T) {
+	const defaultURL = "http://host.docker.internal:18080"
+
+	tmpDir := t.TempDir()
+	cfgDir := filepath.Join(tmpDir, ".sandbox", "config")
+	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+		t.Fatalf("failed to create config dir: %v", err)
+	}
+	cfgPath := filepath.Join(cfgDir, "hostmcp.yaml")
+	if err := os.WriteFile(cfgPath, []byte("server:\n  port: 8180\n"), 0o644); err != nil {
+		t.Fatalf("failed to write config: %v", err)
+	}
+
+	tests := []struct {
+		name       string
+		envValue   string
+		flagArgs   []string
+		wantOutput bool
+	}{
+		{
+			name:       "config port used: source path is logged",
+			envValue:   "",
+			flagArgs:   nil,
+			wantOutput: true,
+		},
+		{
+			name:       "env var wins: nothing logged",
+			envValue:   "http://localhost:9090",
+			flagArgs:   nil,
+			wantOutput: false,
+		},
+		{
+			name:       "url flag wins: nothing logged",
+			envValue:   "",
+			flagArgs:   []string{"--url", "http://custom:7070"},
+			wantOutput: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			originalURL := serverURL
+			originalEnv := os.Getenv("HOSTMCP_SERVER_URL")
+			originalCfgFile := cfgFile
+			originalWorkspaceEnv := os.Getenv("WORKSPACE")
+			originalSuffix := clientSuffix
+			originalTimeout := clientTimeout
+			defer func() {
+				serverURL = originalURL
+				os.Setenv("HOSTMCP_SERVER_URL", originalEnv)
+				cfgFile = originalCfgFile
+				os.Setenv("WORKSPACE", originalWorkspaceEnv)
+				clientSuffix = originalSuffix
+				clientTimeout = originalTimeout
+			}()
+
+			serverURL = defaultURL
+			cfgFile = ""
+			os.Setenv("WORKSPACE", tmpDir)
+
+			if tt.envValue != "" {
+				os.Setenv("HOSTMCP_SERVER_URL", tt.envValue)
+			} else {
+				os.Unsetenv("HOSTMCP_SERVER_URL")
+			}
+
+			cmd := &cobra.Command{Use: "test"}
+			cmd.PersistentFlags().StringVar(&serverURL, "url", defaultURL, "")
+			if tt.flagArgs != nil {
+				cmd.SetArgs(tt.flagArgs)
+				cmd.ParseFlags(tt.flagArgs)
+			}
+
+			originalStderr := os.Stderr
+			r, w, err := os.Pipe()
+			if err != nil {
+				t.Fatalf("failed to create pipe: %v", err)
+			}
+			os.Stderr = w
+
+			preRunErr := clientCmd.PersistentPreRunE(cmd, []string{})
+
+			w.Close()
+			os.Stderr = originalStderr
+			var buf bytes.Buffer
+			if _, err := io.Copy(&buf, r); err != nil {
+				t.Fatalf("failed to read captured stderr: %v", err)
+			}
+			captured := buf.String()
+
+			if preRunErr != nil {
+				t.Fatalf("PersistentPreRunE returned error: %v", preRunErr)
+			}
+
+			if tt.wantOutput {
+				if !strings.Contains(captured, "8180") || !strings.Contains(captured, cfgPath) {
+					t.Errorf("stderr = %q, want it to mention port 8180 and path %q", captured, cfgPath)
+				}
+			} else if captured != "" {
+				t.Errorf("stderr = %q, want no output", captured)
+			}
+		})
+	}
+}
+
+// Verifies resolveClientServerPort's workspace resolution order and its
+// lenient (never-error) failure behavior.
+//
+// resolveClientServerPortのワークスペース解決順序と、寛容な
+// （決してエラーを返さない）失敗時の挙動を確認します。
+func TestResolveClientServerPort(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfgDir := filepath.Join(tmpDir, ".sandbox", "config")
+	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+		t.Fatalf("failed to create config dir: %v", err)
+	}
+	cfgPath := filepath.Join(cfgDir, "hostmcp.yaml")
+	if err := os.WriteFile(cfgPath, []byte("server:\n  port: 9199\n"), 0o644); err != nil {
+		t.Fatalf("failed to write config: %v", err)
+	}
+
+	t.Run("explicit cfgFile is used directly", func(t *testing.T) {
+		port, path, ok := resolveClientServerPort(cfgPath)
+		if !ok || port != 9199 || path != cfgPath {
+			t.Errorf("got (%d, %q, %v), want (9199, %q, true)", port, path, ok, cfgPath)
+		}
+	})
+
+	t.Run("WORKSPACE env var derives the config path", func(t *testing.T) {
+		originalWorkspaceEnv := os.Getenv("WORKSPACE")
+		defer os.Setenv("WORKSPACE", originalWorkspaceEnv)
+		os.Setenv("WORKSPACE", tmpDir)
+
+		port, path, ok := resolveClientServerPort("")
+		if !ok || port != 9199 || path != cfgPath {
+			t.Errorf("got (%d, %q, %v), want (9199, %q, true)", port, path, ok, cfgPath)
+		}
+	})
+
+	t.Run("missing config in workspace returns false, not an error", func(t *testing.T) {
+		originalWorkspaceEnv := os.Getenv("WORKSPACE")
+		defer os.Setenv("WORKSPACE", originalWorkspaceEnv)
+		os.Setenv("WORKSPACE", t.TempDir())
+
+		port, path, ok := resolveClientServerPort("")
+		if ok {
+			t.Errorf("got (%d, %q, %v), want ok=false for a workspace with no hostmcp.yaml", port, path, ok)
+		}
+	})
+
+	t.Run("nonexistent explicit cfgFile returns false, not an error", func(t *testing.T) {
+		port, path, ok := resolveClientServerPort(filepath.Join(tmpDir, "does-not-exist.yaml"))
+		if ok {
+			t.Errorf("got (%d, %q, %v), want ok=false for a nonexistent config path", port, path, ok)
+		}
+	})
+
+	// Intentionally not tested here: the bare "$WORKSPACE unset, fixed
+	// /workspace fallback" branch (cfgFile == "" && $WORKSPACE == ""),
+	// since this test binary itself runs inside a container whose real
+	// /workspace/.sandbox/config/hostmcp.yaml exists — asserting on that
+	// branch would make the test's outcome depend on this repo's own
+	// environment rather than on resolveClientServerPort's logic.
+	//
+	// ここでは意図的に「$WORKSPACE未設定、固定の/workspaceフォールバック」
+	// という素の分岐（cfgFileが空かつ$WORKSPACEも空）はテストしません。
+	// このテストバイナリ自体が実際の/workspace/.sandbox/config/hostmcp.yamlを
+	// 持つコンテナ内で動くため、この分岐をアサートするとテスト結果が
+	// resolveClientServerPortのロジックではなくこのリポジトリ自身の環境に
+	// 依存してしまうためです。
 }
 
 // TestExtractJSONFromMarkdown tests the extraction of JSON from Markdown code blocks.
@@ -556,8 +933,8 @@ Some footer text`,
 	}
 }
 
-// TestClientLifecycleCommands verifies that lifecycle subcommands are registered with correct flags.
-// TestClientLifecycleCommandsはlifecycleサブコマンドが正しいフラグで登録されていることを確認します。
+// Verifies that lifecycle subcommands are registered with correct flags.
+// lifecycleサブコマンドが正しいフラグで登録されていることを確認します。
 func TestClientLifecycleCommands(t *testing.T) {
 	// Restart command
 	if clientRestartCmd == nil {
@@ -595,8 +972,8 @@ func TestClientLifecycleCommands(t *testing.T) {
 	}
 }
 
-// TestClientHostToolsCommands verifies that host-tools subcommands are registered.
-// TestClientHostToolsCommandsはhost-toolsサブコマンドが登録されていることを確認します。
+// Verifies that host-tools subcommands are registered.
+// host-toolsサブコマンドが登録されていることを確認します。
 func TestClientHostToolsCommands(t *testing.T) {
 	if clientHostToolsCmd == nil {
 		t.Fatal("clientHostToolsCmd is nil")
@@ -627,8 +1004,8 @@ func TestClientHostToolsCommands(t *testing.T) {
 	}
 }
 
-// TestClientHostExecCommand verifies that host-exec command is registered with correct flags.
-// TestClientHostExecCommandはhost-execコマンドが正しいフラグで登録されていることを確認します。
+// Verifies that host-exec command is registered with correct flags.
+// host-execコマンドが正しいフラグで登録されていることを確認します。
 func TestClientHostExecCommand(t *testing.T) {
 	if clientHostExecCmd == nil {
 		t.Fatal("clientHostExecCmd is nil")

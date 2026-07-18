@@ -458,7 +458,7 @@ hostmcp client exec securenote-api "npm run build"
 
 | Flag | Env var | Default | Description |
 |------|---------|---------|-------------|
-| `--url` | `HOSTMCP_SERVER_URL` | `http://host.docker.internal:18080` | HostMCP server URL |
+| `--url` | `HOSTMCP_SERVER_URL` | `server.port` from the resolved workspace's `hostmcp.yaml`, else `http://host.docker.internal:18080` | HostMCP server URL |
 | `--client-suffix` / `-s` | `HOSTMCP_CLIENT_SUFFIX` | (none) | Suffix appended to client name |
 | `--timeout` | `HOSTMCP_TIMEOUT` | `30` | Timeout in seconds for HTTP requests and tool call responses |
 
