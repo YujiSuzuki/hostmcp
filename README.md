@@ -872,11 +872,41 @@ host_access:
       - ".sh"
       - ".go"
       - ".py"
-    timeout: 60  # seconds
+    timeout: 60  # seconds; used for any tool that doesn't declare its own @timeout
+    max_tool_timeout: 1800  # seconds; ceiling that a tool's own @timeout is clamped to (0 = no ceiling)
 
     max_output_bytes: 102400  # 100 KB; set to 0 to disable
     large_output_dir: ".sandbox/tmp"  # relative to workspace root
 ```
+
+#### Per-Tool Timeout Declaration
+
+A tool that regularly needs more time than the global `timeout` (a slow build or test suite, for example) can declare its own timeout directly in its header comment, instead of raising the global default for every tool:
+
+```bash
+#!/bin/bash
+# my-slow-build.sh
+# @timeout: 600
+# Runs the full build, which can take several minutes.
+```
+
+```go
+// @timeout: 600
+// Runs the full build, which can take several minutes.
+package main
+```
+
+The declared value only takes effect once the script is approved via `hostmcp tools sync` — approval is what lets a human reviewer actually see the `@timeout:` line before granting it. To make sure that review isn't skippable, `hostmcp tools sync` prints any `@timeout:` declaration directly in the approval prompt (for both new and updated tools), before asking `[y/N]`, rather than requiring the reviewer to opt into `d(iff)` to notice it:
+
+```
+  New tool found:
+    my-slow-build.sh - "Runs the full build, which can take several minutes."
+    Source: /workspace/.sandbox/host-tools/my-slow-build.sh
+    ⚠️  Declares custom timeout: @timeout: 600s (global default is 60s)
+    → Copy to ~/.hostmcp/host-tools/my-project-a1b2c3d4/my-slow-build.sh? [y/N]
+```
+
+A declared value above `max_tool_timeout` is clamped, not honored as-is — this ceiling can only be raised by a human editing `hostmcp.yaml`, never by an AI or by a script declaring a larger value. If a run is cut short this way, the timeout error explains that the ceiling (not the declaration) is the binding constraint, since re-declaring a larger `@timeout:` would have no effect.
 
 #### Large Output Handling
 

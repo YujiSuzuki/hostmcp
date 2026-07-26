@@ -404,15 +404,17 @@ type SecurityPermissions struct {
 // Controls how HostMCP outputs logs.
 //
 // Note: Log output destination is configured via command-line flags:
-//   --log-file /path/to/file.log
-//   --log-also-stdout
+//
+//	--log-file /path/to/file.log
+//	--log-also-stdout
 //
 // LoggingConfigはロギング設定を保持します。
 // HostMCPがログを出力する方法を制御します。
 //
 // 注意: ログ出力先はコマンドラインフラグで設定します:
-//   --log-file /path/to/file.log
-//   --log-also-stdout
+//
+//	--log-file /path/to/file.log
+//	--log-also-stdout
 type LoggingConfig struct {
 	// Level sets the minimum log level to output.
 	// Valid values: "debug", "info", "warn", "error"
@@ -627,9 +629,28 @@ type HostToolsConfig struct {
 	// AllowedExtensionsはツールとして認識されるファイル拡張子のリストです。
 	AllowedExtensions []string `yaml:"allowed_extensions"`
 
-	// Timeout is the maximum execution time in seconds for tool execution.
-	// Timeoutはツール実行の最大実行時間（秒）です。
+	// Timeout is the maximum execution time in seconds for tool execution,
+	// used for any tool that doesn't declare its own "@timeout: N" header.
+	// Timeoutはツール実行の最大実行時間（秒）です。独自の「@timeout: N」
+	// ヘッダーを宣言していないツールに使われます。
 	Timeout int `yaml:"timeout"`
+
+	// MaxToolTimeout is the ceiling (in seconds) that a tool's own declared
+	// "@timeout: N" header value is clamped to. It exists so that a tool
+	// approved via `hostmcp tools sync` cannot tie up host resources
+	// indefinitely just because its script declared an excessive value — the
+	// ceiling itself can only be raised by a human editing hostmcp.yaml, not
+	// by anything an AI or a staged script can do on its own.
+	// 0 means no ceiling (a declared timeout is used as-is).
+	//
+	// MaxToolTimeoutは、ツール自身が宣言する「@timeout: N」ヘッダー値を
+	// クランプする上限（秒）です。`hostmcp tools sync`で承認されたツールが、
+	// スクリプト側で法外な値を宣言しただけでホストリソースを無期限に
+	// 占有できてしまわないようにするために存在します — この上限自体は、
+	// AIやステージング済みスクリプトの側からは変更できず、人間が
+	// hostmcp.yamlを編集して初めて引き上げられます。
+	// 0は上限なし（宣言値をそのまま使用）を意味します。
+	MaxToolTimeout int `yaml:"max_tool_timeout"`
 
 	// MaxOutputBytes is the maximum output size in bytes before saving to a file.
 	// When output exceeds this limit, it is saved to LargeOutputDir and the AI
@@ -837,13 +858,14 @@ func NewDefaultConfig() *Config {
 				Common:            true,
 				AllowedExtensions: []string{".sh", ".go", ".py"},
 				Timeout:           60,
+				MaxToolTimeout:    1800,
 				MaxOutputBytes:    102400,
 				LargeOutputDir:    ".sandbox/tmp",
 			},
 			HostCommands: HostCommandsConfig{
-				Enabled:    false,
-				Whitelist:  make(map[string][]string),
-				Deny:       make(map[string][]string),
+				Enabled:   false,
+				Whitelist: make(map[string][]string),
+				Deny:      make(map[string][]string),
 				Dangerously: HostCommandsDangerously{
 					Enabled:  false,
 					Commands: make(map[string][]string),
@@ -927,6 +949,12 @@ func (c *Config) Validate() error {
 	if c.HostAccess.HostTools.Enabled {
 		if c.HostAccess.HostTools.Timeout <= 0 {
 			return fmt.Errorf("invalid host_tools timeout: %d (must be > 0)", c.HostAccess.HostTools.Timeout)
+		}
+		if c.HostAccess.HostTools.MaxToolTimeout < 0 {
+			return fmt.Errorf("invalid host_tools max_tool_timeout: %d (must be >= 0, 0 means no ceiling)", c.HostAccess.HostTools.MaxToolTimeout)
+		}
+		if c.HostAccess.HostTools.MaxToolTimeout > 0 && c.HostAccess.HostTools.MaxToolTimeout < c.HostAccess.HostTools.Timeout {
+			return fmt.Errorf("invalid host_tools max_tool_timeout: %d (must be >= timeout: %d)", c.HostAccess.HostTools.MaxToolTimeout, c.HostAccess.HostTools.Timeout)
 		}
 		if c.HostAccess.HostTools.MaxOutputBytes < 0 {
 			return fmt.Errorf("invalid host_tools max_output_bytes: %d (must be >= 0)", c.HostAccess.HostTools.MaxOutputBytes)

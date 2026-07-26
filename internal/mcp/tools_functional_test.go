@@ -1515,6 +1515,104 @@ func TestToolRunHostTool_TimeoutHint(t *testing.T) {
 	}
 }
 
+// TestToolRunHostTool_TimeoutHint_DeclaredTimeout tests that a timeout error
+// for a tool that declares its own "@timeout:" (and is not clamped by
+// max_tool_timeout) tells the caller to raise that declaration and re-approve
+// via `hostmcp tools sync`, rather than pointing at the global hostmcp.yaml
+// timeout setting.
+//
+// TestToolRunHostTool_TimeoutHint_DeclaredTimeoutは、独自の「@timeout:」を
+// 宣言している（かつmax_tool_timeoutでクランプされていない）ツールの
+// タイムアウトエラーが、グローバルなhostmcp.yamlのtimeout設定ではなく、
+// その宣言値を増やして`hostmcp tools sync`で再承認するよう案内することを
+// テストします。
+func TestToolRunHostTool_TimeoutHint_DeclaredTimeout(t *testing.T) {
+	policy := createTestPolicy()
+	mockClient := docker.NewMockClient(policy)
+	ctx := context.Background()
+
+	dir := t.TempDir()
+	toolsDir := dir + "/tools"
+	os.MkdirAll(toolsDir, 0755)
+
+	// Declares 1s (still too short for the 60s sleep) but well under the
+	// 5s max_tool_timeout ceiling, so this is the "declared, not clamped" case.
+	os.WriteFile(toolsDir+"/slow.sh",
+		[]byte("#!/bin/bash\n# slow.sh\n# @timeout: 1\n# Slow tool\nsleep 60\n"), 0755)
+
+	htCfg := &configPkg.HostToolsConfig{
+		Enabled:           true,
+		Directories:       []string{"tools"},
+		AllowedExtensions: []string{".sh"},
+		Timeout:           1,
+		MaxToolTimeout:    5,
+	}
+	mgr := hosttools.NewManager(htCfg, dir)
+	server := NewServer(mockClient, 8080, WithHostToolsManager(mgr))
+
+	_, err := server.toolRunHostTool(ctx, map[string]any{"name": "slow.sh"})
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+
+	if !strings.Contains(err.Error(), "@timeout: 1") {
+		t.Errorf("expected the tool's own @timeout declaration in error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "hostmcp tools sync") {
+		t.Errorf("expected re-approval guidance (hostmcp tools sync) in error, got: %v", err)
+	}
+}
+
+// TestToolRunHostTool_TimeoutHint_ClampedByCeiling tests that a timeout error
+// for a tool whose declared "@timeout:" exceeds max_tool_timeout explains
+// that the declared value was clamped, and that only an administrator
+// raising max_tool_timeout (not a larger @timeout declaration) will help —
+// this is the case the original 2-way branch design missed.
+//
+// TestToolRunHostTool_TimeoutHint_ClampedByCeilingは、宣言した「@timeout:」が
+// max_tool_timeoutを超えるツールのタイムアウトエラーが、宣言値がクランプ
+// されたことを説明し、より大きな@timeout宣言ではなく管理者によるmax_tool_timeout
+// の引き上げだけが有効であることを案内することをテストします
+// — これは当初の2択設計では抜け落ちていたケースです。
+func TestToolRunHostTool_TimeoutHint_ClampedByCeiling(t *testing.T) {
+	policy := createTestPolicy()
+	mockClient := docker.NewMockClient(policy)
+	ctx := context.Background()
+
+	dir := t.TempDir()
+	toolsDir := dir + "/tools"
+	os.MkdirAll(toolsDir, 0755)
+
+	// Declares 600s, but the ceiling is 1s, so the actual run is cut off at 1s.
+	os.WriteFile(toolsDir+"/greedy.sh",
+		[]byte("#!/bin/bash\n# greedy.sh\n# @timeout: 600\n# Greedy tool\nsleep 60\n"), 0755)
+
+	htCfg := &configPkg.HostToolsConfig{
+		Enabled:           true,
+		Directories:       []string{"tools"},
+		AllowedExtensions: []string{".sh"},
+		Timeout:           1,
+		MaxToolTimeout:    1,
+	}
+	mgr := hosttools.NewManager(htCfg, dir)
+	server := NewServer(mockClient, 8080, WithHostToolsManager(mgr))
+
+	_, err := server.toolRunHostTool(ctx, map[string]any{"name": "greedy.sh"})
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+
+	if !strings.Contains(err.Error(), "@timeout: 600") {
+		t.Errorf("expected the tool's declared value (600) in error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "max_tool_timeout") {
+		t.Errorf("expected max_tool_timeout ceiling mentioned in error, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "hostmcp tools sync") {
+		t.Errorf("re-approval guidance should NOT be shown when the ceiling (not the declaration) is the binding constraint, got: %v", err)
+	}
+}
+
 // TestToolExecHostCommand_Functional tests the exec_host_command tool handler.
 // TestToolExecHostCommand_Functionalはexec_host_command MCPツールハンドラーをテストします。
 func TestToolExecHostCommand_Functional(t *testing.T) {

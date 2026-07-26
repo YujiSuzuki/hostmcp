@@ -51,6 +51,35 @@ package main
 	}
 }
 
+// TestParseGoHeader_Timeout verifies that an "@timeout: N" header directive is
+// parsed into ToolInfo.Timeout and does not get mistaken for the Description
+// line, regardless of where in the header it appears.
+//
+// TestParseGoHeader_Timeoutは、ヘッダーディレクティブ「@timeout: N」が
+// ToolInfo.Timeoutとして解析され、ヘッダー内のどこに書かれてもDescription行と
+// 誤認されないことを確認します。
+func TestParseGoHeader_Timeout(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test-tool.go")
+	content := `// @timeout: 600
+// Short description of the tool
+package main
+`
+	os.WriteFile(path, []byte(content), 0644)
+
+	info, err := parseGoHeader(path)
+	if err != nil {
+		t.Fatalf("parseGoHeader error: %v", err)
+	}
+
+	if info.Timeout != 600 {
+		t.Errorf("Timeout = %d, want 600", info.Timeout)
+	}
+	if info.Description != "Short description of the tool" {
+		t.Errorf("Description = %q, want 'Short description of the tool'", info.Description)
+	}
+}
+
 // TestParseShellHeader verifies that shell script header comments are parsed correctly,
 // extracting the description and stopping at the "---" separator.
 //
@@ -84,6 +113,72 @@ echo "hello"
 	}
 }
 
+// TestParseShellHeader_Timeout verifies that "@timeout: N" is parsed into
+// ToolInfo.Timeout and is not mistaken for the Description line, matching
+// xcode-test.sh's real header shape (shebang, filename comment, @timeout,
+// then description).
+//
+// TestParseShellHeader_Timeoutは、「@timeout: N」がToolInfo.Timeoutとして
+// 解析され、Description行と誤認されないことを確認します（shebang、ファイル名
+// コメント、@timeout、descriptionという実際のxcode-test.shのヘッダー構造に
+// 合わせています）。
+func TestParseShellHeader_Timeout(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "xcode-test.sh")
+	content := `#!/bin/bash
+# xcode-test.sh
+# @timeout: 600
+# Xcode テストをホスト OS上で実行する。
+set -e
+`
+	os.WriteFile(path, []byte(content), 0644)
+
+	info, err := parseShellHeader(path)
+	if err != nil {
+		t.Fatalf("parseShellHeader error: %v", err)
+	}
+
+	if info.Timeout != 600 {
+		t.Errorf("Timeout = %d, want 600", info.Timeout)
+	}
+	if info.Description != "Xcode テストをホスト OS上で実行する。" {
+		t.Errorf("Description = %q, want the description line, not the @timeout line", info.Description)
+	}
+}
+
+// TestParseShellHeader_TimeoutInvalidIgnored verifies that a malformed,
+// non-positive, or overflow-prone "@timeout:" value is ignored (Timeout stays
+// 0, meaning "use the global default") rather than causing a parse error.
+//
+// TestParseShellHeader_TimeoutInvalidIgnoredは、不正・0以下・オーバーフローの
+// おそれがある「@timeout:」の値が、パースエラーにはならず無視される
+// （Timeoutは0のまま=グローバル既定値を使う、を意味する）ことを確認します。
+func TestParseShellHeader_TimeoutInvalidIgnored(t *testing.T) {
+	cases := []string{
+		"# @timeout: not-a-number\n",
+		"# @timeout: 0\n",
+		"# @timeout: -5\n",
+		"# @timeout: 99999999999999999999999999999999\n",
+	}
+	for _, directive := range cases {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "tool.sh")
+		content := "#!/bin/bash\n# tool.sh\n" + directive + "# A description\n"
+		os.WriteFile(path, []byte(content), 0644)
+
+		info, err := parseShellHeader(path)
+		if err != nil {
+			t.Fatalf("parseShellHeader error for %q: %v", directive, err)
+		}
+		if info.Timeout != 0 {
+			t.Errorf("directive %q: Timeout = %d, want 0 (ignored)", directive, info.Timeout)
+		}
+		if info.Description != "A description" {
+			t.Errorf("directive %q: Description = %q, want 'A description'", directive, info.Description)
+		}
+	}
+}
+
 // TestParsePythonHeader verifies that Python header comments are parsed correctly,
 // extracting the description while ignoring shebang and encoding declarations.
 //
@@ -109,6 +204,69 @@ import sys
 	}
 	if info.Extension != ".py" {
 		t.Errorf("Extension = %q, want .py", info.Extension)
+	}
+}
+
+// TestParsePythonHeader_Timeout verifies that "@timeout: N" is parsed into
+// ToolInfo.Timeout for Python headers, which — unlike shell/Go — have no
+// Usage:/Examples: section support to interact with.
+//
+// TestParsePythonHeader_Timeoutは、Pythonヘッダーでも「@timeout: N」が
+// ToolInfo.Timeoutとして解析されることを確認します。Pythonヘッダーはshell/Goと
+// 異なりUsage:/Examples:セクションに対応していないため、それらとの優先順位は
+// 考慮不要です。
+func TestParsePythonHeader_Timeout(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "tool.py")
+	content := `#!/usr/bin/env python3
+# @timeout: 600
+# Python tool for data processing
+import sys
+`
+	os.WriteFile(path, []byte(content), 0644)
+
+	info, err := parsePythonHeader(path)
+	if err != nil {
+		t.Fatalf("parsePythonHeader error: %v", err)
+	}
+
+	if info.Timeout != 600 {
+		t.Errorf("Timeout = %d, want 600", info.Timeout)
+	}
+	if info.Description != "Python tool for data processing" {
+		t.Errorf("Description = %q, want 'Python tool for data processing'", info.Description)
+	}
+}
+
+// TestParsePythonHeader_TimeoutAfterDescription is a regression test for the
+// parsePythonHeader restructuring: previously the function returned
+// immediately after finding the Description line, so scanning had to keep
+// going past it in order to find an "@timeout:" line that appears afterward.
+//
+// TestParsePythonHeader_TimeoutAfterDescriptionは、parsePythonHeaderの構造変更に
+// 対する回帰テストです。以前はDescription行を見つけた時点で即座にreturnしていた
+// ため、その後に書かれた「@timeout:」行を見つけるにはDescription確定後も
+// スキャンを継続する必要があります。
+func TestParsePythonHeader_TimeoutAfterDescription(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "tool.py")
+	content := `#!/usr/bin/env python3
+# Python tool for data processing
+# @timeout: 600
+import sys
+`
+	os.WriteFile(path, []byte(content), 0644)
+
+	info, err := parsePythonHeader(path)
+	if err != nil {
+		t.Fatalf("parsePythonHeader error: %v", err)
+	}
+
+	if info.Description != "Python tool for data processing" {
+		t.Errorf("Description = %q, want 'Python tool for data processing'", info.Description)
+	}
+	if info.Timeout != 600 {
+		t.Errorf("Timeout = %d, want 600", info.Timeout)
 	}
 }
 

@@ -189,23 +189,44 @@ func (m *Manager) RunTool(name string, args []string) (*Result, error) {
 		return nil, fmt.Errorf("host tools are disabled")
 	}
 
-	timeout := time.Duration(m.config.Timeout) * time.Second
-
 	dirs, err := m.toolDirs()
 	if err != nil {
 		return nil, err
 	}
 
 	for _, dir := range dirs {
-		// Check if tool exists in this directory via GetToolInfo
-		// このディレクトリにツールが存在するかGetToolInfoで確認
-		_, err := GetToolInfo(dir, name, m.config.AllowedExtensions)
+		// Check if tool exists in this directory and pick up its own
+		// declared timeout (if any) via GetToolInfo.
+		// このディレクトリにツールが存在するか確認し、GetToolInfoでツール自身が
+		// 宣言するタイムアウト（あれば）も取得する。
+		info, err := GetToolInfo(dir, name, m.config.AllowedExtensions)
 		if err != nil {
 			continue
 		}
-		return RunTool(dir, name, args, timeout, m.workspaceRoot)
+		return RunTool(dir, name, args, m.effectiveTimeout(info), m.workspaceRoot)
 	}
 	return nil, fmt.Errorf("tool not found: %s", name)
+}
+
+// effectiveTimeout resolves the actual timeout to use for a tool run: its own
+// declared "@timeout:" value if present, clamped to MaxToolTimeout (unless
+// MaxToolTimeout is 0, meaning no ceiling); otherwise the global default.
+//
+// effectiveTimeoutは、ツール実行に実際に使うタイムアウトを決定します:
+// ツール自身が宣言した「@timeout:」値があればそれを使い、MaxToolTimeoutで
+// クランプします（MaxToolTimeoutが0の場合は上限なし）。宣言が無ければ
+// グローバル既定値を使います。
+func (m *Manager) effectiveTimeout(info ToolInfo) time.Duration {
+	effective := m.config.Timeout
+	if info.Timeout > 0 {
+		effective = info.Timeout
+	}
+	if m.config.MaxToolTimeout > 0 && effective > m.config.MaxToolTimeout {
+		slog.Warn("Clamping declared tool timeout to max_tool_timeout ceiling",
+			"tool", info.Name, "declared", effective, "clamped_to", m.config.MaxToolTimeout)
+		effective = m.config.MaxToolTimeout
+	}
+	return time.Duration(effective) * time.Second
 }
 
 // PendingApproval returns the host tools that are staged (in the staging

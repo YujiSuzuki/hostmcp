@@ -551,6 +551,10 @@ func TestHostAccessConfig_Defaults(t *testing.T) {
 	if cfg.HostAccess.HostTools.Timeout != 60 {
 		t.Errorf("HostAccess.HostTools.Timeout = %d, want 60", cfg.HostAccess.HostTools.Timeout)
 	}
+	// Default MaxToolTimeout (30 minutes)
+	if cfg.HostAccess.HostTools.MaxToolTimeout != 1800 {
+		t.Errorf("HostAccess.HostTools.MaxToolTimeout = %d, want 1800", cfg.HostAccess.HostTools.MaxToolTimeout)
+	}
 	// Default MaxOutputBytes (100KB)
 	if cfg.HostAccess.HostTools.MaxOutputBytes != 102400 {
 		t.Errorf("HostAccess.HostTools.MaxOutputBytes = %d, want 102400", cfg.HostAccess.HostTools.MaxOutputBytes)
@@ -852,6 +856,50 @@ func TestHostAccessConfig_Validation(t *testing.T) {
 			modify: func(cfg *Config) {
 				cfg.HostAccess.HostTools.Enabled = false
 				cfg.HostAccess.HostTools.MaxOutputBytes = -1 // invalid but ignored when disabled
+			},
+			wantErr: false,
+		},
+		{
+			name: "negative max_tool_timeout rejected",
+			modify: func(cfg *Config) {
+				cfg.HostAccess.HostTools.Enabled = true
+				cfg.HostAccess.HostTools.Timeout = 30
+				cfg.HostAccess.HostTools.MaxToolTimeout = -1
+			},
+			wantErr: true,
+		},
+		{
+			name: "zero max_tool_timeout is valid (no ceiling)",
+			modify: func(cfg *Config) {
+				cfg.HostAccess.HostTools.Enabled = true
+				cfg.HostAccess.HostTools.Timeout = 30
+				cfg.HostAccess.HostTools.MaxToolTimeout = 0
+			},
+			wantErr: false,
+		},
+		{
+			name: "max_tool_timeout below timeout rejected",
+			modify: func(cfg *Config) {
+				cfg.HostAccess.HostTools.Enabled = true
+				cfg.HostAccess.HostTools.Timeout = 100
+				cfg.HostAccess.HostTools.MaxToolTimeout = 50
+			},
+			wantErr: true,
+		},
+		{
+			name: "max_tool_timeout equal to timeout is valid",
+			modify: func(cfg *Config) {
+				cfg.HostAccess.HostTools.Enabled = true
+				cfg.HostAccess.HostTools.Timeout = 60
+				cfg.HostAccess.HostTools.MaxToolTimeout = 60
+			},
+			wantErr: false,
+		},
+		{
+			name: "disabled host_tools skips max_tool_timeout check",
+			modify: func(cfg *Config) {
+				cfg.HostAccess.HostTools.Enabled = false
+				cfg.HostAccess.HostTools.MaxToolTimeout = -1 // invalid but ignored when disabled
 			},
 			wantErr: false,
 		},

@@ -42,11 +42,22 @@ const (
 // SyncItem represents a tool that may need syncing.
 // SyncItemは同期が必要な可能性のあるツールを表します。
 type SyncItem struct {
-	Name        string     `json:"name"`
-	Description string     `json:"description,omitempty"`
-	Status      SyncStatus `json:"status"`
-	StagingPath string     `json:"staging_path"`
-	ApprovedPath string    `json:"approved_path"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	// Timeout is the tool's own declared "@timeout: N" value (seconds), or 0
+	// if it did not declare one. Carried through from ToolInfo so the
+	// interactive approval prompt can surface it — this is what lets a human
+	// reviewer actually see a per-tool timeout declaration before approving,
+	// rather than relying solely on catching it in the diff view.
+	//
+	// Timeoutは、ツール自身が宣言した「@timeout: N」の値（秒）で、未宣言の
+	// 場合は0です。ToolInfoから引き継ぎ、対話承認プロンプトに表示できるように
+	// します — これにより、人間のレビュアーはdiff表示に気づくかどうかに頼らず、
+	// ツール別タイムアウト宣言を承認前に実際に目にすることができます。
+	Timeout      int        `json:"timeout,omitempty"`
+	Status       SyncStatus `json:"status"`
+	StagingPath  string     `json:"staging_path"`
+	ApprovedPath string     `json:"approved_path"`
 }
 
 // projectMeta stores metadata about a project in the approved directory.
@@ -206,6 +217,7 @@ func (s *SyncManager) DetectChanges() ([]SyncItem, error) {
 			items = append(items, SyncItem{
 				Name:         tool.Name,
 				Description:  tool.Description,
+				Timeout:      tool.Timeout,
 				Status:       status,
 				StagingPath:  stagingPath,
 				ApprovedPath: approvedPath,
@@ -279,6 +291,7 @@ func (s *SyncManager) RunInteractiveSync() (int, error) {
 			}
 			fmt.Fprintln(s.writer)
 			fmt.Fprintf(s.writer, "    Source: %s\n", item.StagingPath)
+			s.printTimeoutWarning(item)
 			fmt.Fprintf(s.writer, "    → Copy to %s? [y/N] ", item.ApprovedPath)
 
 			if scanner.Scan() {
@@ -303,6 +316,7 @@ func (s *SyncManager) RunInteractiveSync() (int, error) {
 			}
 			fmt.Fprintln(s.writer)
 			fmt.Fprintf(s.writer, "    Source: %s\n", item.StagingPath)
+			s.printTimeoutWarning(item)
 			fmt.Fprintf(s.writer, "    → Update %s? [y/N/d(iff)] ", item.ApprovedPath)
 
 			if scanner.Scan() {
@@ -429,6 +443,64 @@ func writeProjectMeta(approvedDir, workspacePath string) error {
 		return err
 	}
 	return os.WriteFile(filepath.Join(approvedDir, projectMetaFile), data, 0644)
+}
+
+// printTimeoutWarning surfaces a tool's declared "@timeout:" value directly
+// in the approval prompt, unconditionally (not behind the opt-in "d(iff)"
+// command) — this is what actually delivers the safety property this
+// feature depends on: a human approving `hostmcp tools sync` must see a
+// non-default timeout declaration before typing "y", not just have the
+// option to look for it via diff.
+//
+// printTimeoutWarningは、ツール自身が宣言した「@timeout:」の値を、承認
+// プロンプトに無条件で（オプトインの「d(iff)」コマンドの裏に隠さず）
+// 表示します — これが本機能の前提とする安全性を実際に担保するものです:
+// `hostmcp tools sync`を承認する人間は、「y」と入力する前に既定値と異なる
+// タイムアウト宣言を必ず目にする必要があり、diffで気づく機会があるだけでは
+// 不十分です。
+func (s *SyncManager) printTimeoutWarning(item SyncItem) {
+	if item.Timeout <= 0 {
+		return
+	}
+	if isJapaneseLocale() {
+		fmt.Fprintf(s.writer, "    ⚠️  独自のタイムアウトを宣言: @timeout: %d秒", item.Timeout)
+		switch {
+		case s.cfg.MaxToolTimeout > 0 && item.Timeout > s.cfg.MaxToolTimeout:
+			fmt.Fprintf(s.writer, "（max_tool_timeout: %d秒を超えるため %d秒にクランプされます）\n",
+				s.cfg.MaxToolTimeout, s.cfg.MaxToolTimeout)
+		default:
+			fmt.Fprintf(s.writer, "（グローバル既定値は%d秒）\n", s.cfg.Timeout)
+		}
+		return
+	}
+	fmt.Fprintf(s.writer, "    ⚠️  Declares custom timeout: @timeout: %ds", item.Timeout)
+	switch {
+	case s.cfg.MaxToolTimeout > 0 && item.Timeout > s.cfg.MaxToolTimeout:
+		fmt.Fprintf(s.writer, " (exceeds max_tool_timeout: %ds — will be clamped to %ds)\n",
+			s.cfg.MaxToolTimeout, s.cfg.MaxToolTimeout)
+	default:
+		fmt.Fprintf(s.writer, " (global default is %ds)\n", s.cfg.Timeout)
+	}
+}
+
+// isJapaneseLocale reports whether LC_ALL (falling back to LANG) indicates a
+// Japanese locale, matching the same LC_ALL>LANG precedence and "ja_JP"
+// prefix check used by isJapaneseLocale in internal/cli/client.go and
+// writeSponsorMessage in internal/cli/serve.go. Duplicated here (rather than
+// imported) because internal/cli already imports internal/hosttools, so the
+// reverse import would create a cycle.
+//
+// isJapaneseLocaleは、LC_ALL（フォールバックでLANG）が日本語ロケールを示すかを
+// 返します。internal/cli/client.goのisJapaneseLocaleやinternal/cli/serve.goの
+// writeSponsorMessageと同じLC_ALL>LANGの優先順位、"ja_JP"接頭辞判定です。
+// ここで重複定義しているのは（importせず）、internal/cliが既にinternal/hosttoolsを
+// importしているため、逆方向のimportは循環依存になってしまうためです。
+func isJapaneseLocale() bool {
+	lang := os.Getenv("LC_ALL")
+	if lang == "" {
+		lang = os.Getenv("LANG")
+	}
+	return strings.HasPrefix(lang, "ja_JP")
 }
 
 // showDiff displays a simple line-by-line diff between two files.

@@ -179,6 +179,104 @@ func TestManager_RunTool_NotFound(t *testing.T) {
 	}
 }
 
+// TestManager_RunTool_UsesDeclaredTimeout verifies that a tool's own
+// "@timeout:" declaration overrides the global default, letting it run
+// longer than the global timeout alone would permit.
+//
+// TestManager_RunTool_UsesDeclaredTimeoutは、ツール自身の「@timeout:」宣言が
+// グローバル既定値を上書きし、グローバルタイムアウトだけでは許されない長さの
+// 実行を可能にすることを確認します。
+func TestManager_RunTool_UsesDeclaredTimeout(t *testing.T) {
+	dir := t.TempDir()
+	toolsDir := filepath.Join(dir, "tools")
+	os.MkdirAll(toolsDir, 0755)
+
+	// Declares 3s and sleeps 1.5s: the 1s global default alone would kill
+	// this, so success proves the declaration was honored.
+	os.WriteFile(filepath.Join(toolsDir, "slow.sh"),
+		[]byte("#!/bin/bash\n# slow.sh\n# @timeout: 3\n# Slow tool\nsleep 1.5\necho done\n"), 0755)
+
+	cfg := &config.HostToolsConfig{
+		Enabled:           true,
+		Directories:       []string{"tools"},
+		AllowedExtensions: []string{".sh"},
+		Timeout:           1,
+		MaxToolTimeout:    5,
+	}
+	m := NewManager(cfg, dir)
+
+	result, err := m.RunTool("slow.sh", nil)
+	if err != nil {
+		t.Fatalf("RunTool error: %v", err)
+	}
+	if result.Stdout != "done\n" {
+		t.Errorf("Stdout = %q, want 'done\\n'", result.Stdout)
+	}
+}
+
+// TestManager_RunTool_DeclaredTimeoutExceedsCeiling_Clamped verifies that a
+// declared timeout above max_tool_timeout is clamped down rather than
+// honored as-is, so a script cannot escape the ceiling just by declaring a
+// larger value.
+//
+// TestManager_RunTool_DeclaredTimeoutExceedsCeiling_Clampedは、
+// max_tool_timeoutを超える宣言値がそのまま使われずクランプされることを
+// 確認します。スクリプトが大きな値を宣言するだけで上限を回避できては
+// なりません。
+func TestManager_RunTool_DeclaredTimeoutExceedsCeiling_Clamped(t *testing.T) {
+	dir := t.TempDir()
+	toolsDir := filepath.Join(dir, "tools")
+	os.MkdirAll(toolsDir, 0755)
+
+	// Declares 10s, but the ceiling is 1s; sleeping 1.5s must still be killed.
+	os.WriteFile(filepath.Join(toolsDir, "greedy.sh"),
+		[]byte("#!/bin/bash\n# greedy.sh\n# @timeout: 10\n# Greedy tool\nsleep 1.5\necho done\n"), 0755)
+
+	cfg := &config.HostToolsConfig{
+		Enabled:           true,
+		Directories:       []string{"tools"},
+		AllowedExtensions: []string{".sh"},
+		Timeout:           1,
+		MaxToolTimeout:    1,
+	}
+	m := NewManager(cfg, dir)
+
+	_, err := m.RunTool("greedy.sh", nil)
+	if err == nil {
+		t.Error("RunTool should time out when the declared timeout exceeds max_tool_timeout")
+	}
+}
+
+// TestManager_RunTool_NoDeclaration_UsesGlobalDefault is a regression test
+// confirming that tools without an "@timeout:" declaration keep using the
+// global default exactly as before this feature existed.
+//
+// TestManager_RunTool_NoDeclaration_UsesGlobalDefaultは、「@timeout:」を
+// 宣言していないツールが、本機能追加前と変わらずグローバル既定値を
+// 使い続けることを確認する回帰テストです。
+func TestManager_RunTool_NoDeclaration_UsesGlobalDefault(t *testing.T) {
+	dir := t.TempDir()
+	toolsDir := filepath.Join(dir, "tools")
+	os.MkdirAll(toolsDir, 0755)
+
+	os.WriteFile(filepath.Join(toolsDir, "plain.sh"),
+		[]byte("#!/bin/bash\n# plain.sh\n# Plain tool\nsleep 1.5\necho done\n"), 0755)
+
+	cfg := &config.HostToolsConfig{
+		Enabled:           true,
+		Directories:       []string{"tools"},
+		AllowedExtensions: []string{".sh"},
+		Timeout:           1,
+		MaxToolTimeout:    5,
+	}
+	m := NewManager(cfg, dir)
+
+	_, err := m.RunTool("plain.sh", nil)
+	if err == nil {
+		t.Error("RunTool should time out using the global default when no @timeout is declared")
+	}
+}
+
 // TestManager_MultipleDirectories verifies that Manager correctly aggregates tools from multiple configured directories.
 //
 // TestManager_MultipleDirectoriesは、Managerが複数の設定されたディレクトリからツールを正しく集約することを確認します。

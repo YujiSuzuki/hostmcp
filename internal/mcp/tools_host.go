@@ -137,12 +137,7 @@ func (s *Server) toolRunHostTool(ctx context.Context, args map[string]any) (any,
 	result, err := s.hostToolsManager.RunTool(name, toolArgs)
 	if err != nil {
 		if strings.Contains(err.Error(), "execution timed out") {
-			cfg := s.hostToolsManager.Config()
-			timeoutSec := 60
-			if cfg != nil {
-				timeoutSec = cfg.Timeout
-			}
-			return nil, fmt.Errorf("%w\n\nTo increase the timeout, update host_access.host_tools.timeout in hostmcp.yaml (current: %ds)", err, timeoutSec)
+			return nil, fmt.Errorf("%w\n\n%s", err, s.timeoutHint(name))
 		}
 		return nil, err
 	}
@@ -170,6 +165,53 @@ func (s *Server) toolRunHostTool(ctx context.Context, args map[string]any) (any,
 
 	content := fmt.Sprintf("Tool: %s\nExit Code: %d\n\nOutput:\n%s", name, result.ExitCode, output)
 	return textResponse(content), nil
+}
+
+// timeoutHint builds the guidance text appended to a timeout error, tailored
+// to why the timeout happened: no per-tool declaration, a declaration that
+// was honored as-is, or a declaration that was clamped by max_tool_timeout.
+// The three cases need different advice — re-declaring a larger value only
+// helps in the first two; in the clamped case it does nothing until an
+// administrator raises max_tool_timeout in hostmcp.yaml.
+//
+// timeoutHintは、タイムアウトが発生した理由（ツール別宣言が無い・宣言どおり
+// 使われた・max_tool_timeoutでクランプされた）に応じて、タイムアウトエラーに
+// 添えるガイダンス文言を組み立てます。この3パターンでは有効な対処法が異なり、
+// より大きい値を再宣言することは最初の2パターンでしか効果がありません
+// — クランプされたケースでは、管理者がhostmcp.yamlのmax_tool_timeoutを
+// 引き上げるまで無効です。
+func (s *Server) timeoutHint(name string) string {
+	cfg := s.hostToolsManager.Config()
+	timeoutSec := 60
+	maxToolTimeoutSec := 0
+	if cfg != nil {
+		timeoutSec = cfg.Timeout
+		maxToolTimeoutSec = cfg.MaxToolTimeout
+	}
+
+	info, infoErr := s.hostToolsManager.GetToolInfo(name)
+	declared := infoErr == nil && info.Timeout > 0
+
+	base := fmt.Sprintf("To increase the timeout, update host_access.host_tools.timeout in hostmcp.yaml (current: %ds)", timeoutSec)
+
+	switch {
+	case declared && maxToolTimeoutSec > 0 && info.Timeout > maxToolTimeoutSec:
+		return fmt.Sprintf(
+			"%s\n\nThis tool declares \"@timeout: %d\" in its header, but that is capped by the max_tool_timeout ceiling (%ds) — the actual run was cut off at %ds, not %ds. Increasing the tool's own @timeout value will not help; an administrator must raise host_access.host_tools.max_tool_timeout in hostmcp.yaml.",
+			base, info.Timeout, maxToolTimeoutSec, maxToolTimeoutSec, info.Timeout)
+	case declared:
+		ceiling := "no ceiling configured"
+		if maxToolTimeoutSec > 0 {
+			ceiling = fmt.Sprintf("max_tool_timeout: %ds", maxToolTimeoutSec)
+		}
+		return fmt.Sprintf(
+			"%s\n\nThis tool already declares \"@timeout: %d\" in its header. Increase that value and get it re-approved with `hostmcp tools sync` (current ceiling, %s).",
+			base, info.Timeout, ceiling)
+	default:
+		return fmt.Sprintf(
+			"%s\n\nAlternatively, to extend the timeout for just this tool, add \"# @timeout: <seconds>\" to its header comment and get it approved with `hostmcp tools sync`.",
+			base)
+	}
 }
 
 // saveLargeToolOutput saves large tool output to a file and returns a summary message.

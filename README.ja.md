@@ -872,11 +872,41 @@ host_access:
       - ".sh"
       - ".go"
       - ".py"
-    timeout: 60  # 秒
+    timeout: 60  # 秒。独自の@timeoutを宣言していないツールに使われる
+    max_tool_timeout: 1800  # 秒。ツール自身の@timeoutをクランプする上限（0で上限なし）
 
     max_output_bytes: 102400  # 100KB。0で無効化
     large_output_dir: ".sandbox/tmp"  # workspace_root からの相対パス
 ```
+
+#### ツール別タイムアウト宣言
+
+グローバルな `timeout` より長い時間を常に必要とするツール（遅いビルドやテストスイートなど）は、全ツール共通のデフォルト値を引き上げる代わりに、ヘッダーコメントで自分自身のタイムアウトを宣言できます:
+
+```bash
+#!/bin/bash
+# my-slow-build.sh
+# @timeout: 600
+# 数分かかる可能性があるフルビルドを実行する。
+```
+
+```go
+// @timeout: 600
+// 数分かかる可能性があるフルビルドを実行する。
+package main
+```
+
+宣言した値は `hostmcp tools sync` で承認されて初めて有効になります — この承認ステップがあるからこそ、人間のレビュアーが `@timeout:` 行を実際に承認前に目にできます。このレビューを見落とせないよう、`hostmcp tools sync` は `@timeout:` 宣言があれば（新規・更新のどちらのツールでも）`[y/N]` を聞く前に承認プロンプト内へ無条件で表示します。レビュアーが気づくために `d(iff)` を明示的に選ぶ必要はありません。この警告行自体も `LANG`/`LC_ALL` が `ja_JP` の場合は日本語で表示されます:
+
+```
+  New tool found:
+    my-slow-build.sh - "数分かかる可能性があるフルビルドを実行する。"
+    Source: /workspace/.sandbox/host-tools/my-slow-build.sh
+    ⚠️  独自のタイムアウトを宣言: @timeout: 600秒（グローバル既定値は60秒）
+    → Copy to ~/.hostmcp/host-tools/my-project-a1b2c3d4/my-slow-build.sh? [y/N]
+```
+
+`max_tool_timeout` を超える宣言値はそのまま使われず、クランプされます — この上限自体は人間がhostmcp.yamlを編集して初めて引き上げられ、AIやスクリプトが大きな値を宣言するだけでは変更できません。この理由で実行が打ち切られた場合、タイムアウトエラーには「宣言値ではなく上限が実際の制約になっている」ことが明記されます（より大きな `@timeout:` を再宣言しても効果がないため）。
 
 #### 大きな出力の処理
 

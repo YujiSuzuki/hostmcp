@@ -1,6 +1,7 @@
 package hosttools
 
 import (
+	"bytes"
 	"io"
 	"os"
 	"path/filepath"
@@ -411,6 +412,196 @@ func TestSyncManager_RunInteractiveSync_NoChanges(t *testing.T) {
 	}
 	if synced != 0 {
 		t.Errorf("synced = %d, want 0 (no changes)", synced)
+	}
+}
+
+// TestSyncManager_RunInteractiveSync_NewTool_ShowsTimeoutDeclaration verifies
+// that a new tool's "@timeout:" declaration is shown in the approval prompt
+// unconditionally (before the [y/N] question is even asked), not hidden
+// behind an opt-in diff command. This is what makes the human review this
+// feature depends on actually happen for brand-new tools.
+//
+// TestSyncManager_RunInteractiveSync_NewTool_ShowsTimeoutDeclarationは、
+// 新規ツールの「@timeout:」宣言が、オプトインのdiffコマンドの裏に隠されず、
+// [y/N]と聞かれる前に承認プロンプトへ無条件で表示されることを確認します。
+// これにより、本機能が前提とする人間のレビューが新規ツールでも実際に
+// 行われるようになります。
+func TestSyncManager_RunInteractiveSync_NewTool_ShowsTimeoutDeclaration(t *testing.T) {
+	workspaceDir := t.TempDir()
+	approvedBaseDir := t.TempDir()
+
+	stagingDir := filepath.Join(workspaceDir, "host-tools")
+	os.MkdirAll(stagingDir, 0755)
+	os.WriteFile(filepath.Join(stagingDir, "tool.sh"),
+		[]byte("#!/bin/bash\n# tool.sh\n# @timeout: 900\n# Test tool\necho test\n"), 0755)
+
+	cfg := &config.HostToolsConfig{
+		Enabled:           true,
+		ApprovedDir:       approvedBaseDir,
+		StagingDirs:       []string{"host-tools"},
+		AllowedExtensions: []string{".sh"},
+		Timeout:           60,
+		MaxToolTimeout:    1800,
+	}
+
+	syncMgr := NewSyncManager(cfg, workspaceDir)
+	syncMgr.SetReader(strings.NewReader("n\n"))
+	var out bytes.Buffer
+	syncMgr.SetWriter(&out)
+
+	if _, err := syncMgr.RunInteractiveSync(); err != nil {
+		t.Fatalf("RunInteractiveSync error: %v", err)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "@timeout: 900") {
+		t.Errorf("expected the @timeout declaration to appear in the prompt output, got:\n%s", output)
+	}
+	// The warning must appear before the [y/N] question, i.e. unconditionally,
+	// not only reachable via the "d(iff)" command.
+	// 警告は[y/N]の質問より前に、つまり「d(iff)」コマンド経由でしか
+	// 到達できない形ではなく、無条件に表示されなければならない。
+	warnIdx := strings.Index(output, "@timeout: 900")
+	promptIdx := strings.Index(output, "[y/N]")
+	if warnIdx == -1 || promptIdx == -1 || warnIdx > promptIdx {
+		t.Errorf("expected the timeout warning to appear before the [y/N] prompt, got:\n%s", output)
+	}
+}
+
+// TestSyncManager_RunInteractiveSync_UpdatedTool_ShowsTimeoutDeclaration is
+// the same check as above for the SyncUpdated path, which previously only
+// showed file content via an opt-in "d(iff)" command.
+//
+// TestSyncManager_RunInteractiveSync_UpdatedTool_ShowsTimeoutDeclarationは、
+// 上記と同じ確認をSyncUpdated経路に対して行います。以前はオプトインの
+// 「d(iff)」コマンド経由でしかファイル内容を表示していませんでした。
+func TestSyncManager_RunInteractiveSync_UpdatedTool_ShowsTimeoutDeclaration(t *testing.T) {
+	workspaceDir := t.TempDir()
+	approvedBaseDir := t.TempDir()
+
+	stagingDir := filepath.Join(workspaceDir, "host-tools")
+	os.MkdirAll(stagingDir, 0755)
+	os.WriteFile(filepath.Join(stagingDir, "tool.sh"),
+		[]byte("#!/bin/bash\n# tool.sh\n# @timeout: 900\n# Updated tool\necho updated\n"), 0755)
+
+	projectID := ProjectID(workspaceDir)
+	approvedDir := filepath.Join(approvedBaseDir, projectID)
+	os.MkdirAll(approvedDir, 0755)
+	os.WriteFile(filepath.Join(approvedDir, "tool.sh"),
+		[]byte("#!/bin/bash\n# tool.sh\n# Old tool\necho old\n"), 0755)
+
+	cfg := &config.HostToolsConfig{
+		Enabled:           true,
+		ApprovedDir:       approvedBaseDir,
+		StagingDirs:       []string{"host-tools"},
+		AllowedExtensions: []string{".sh"},
+		Timeout:           60,
+		MaxToolTimeout:    1800,
+	}
+
+	syncMgr := NewSyncManager(cfg, workspaceDir)
+	syncMgr.SetReader(strings.NewReader("n\n"))
+	var out bytes.Buffer
+	syncMgr.SetWriter(&out)
+
+	if _, err := syncMgr.RunInteractiveSync(); err != nil {
+		t.Fatalf("RunInteractiveSync error: %v", err)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "@timeout: 900") {
+		t.Errorf("expected the @timeout declaration to appear in the prompt output, got:\n%s", output)
+	}
+}
+
+// TestSyncManager_RunInteractiveSync_NoTimeoutDeclaration_NoWarningShown is a
+// regression test: a tool that does not declare "@timeout:" must not trigger
+// the warning line, so the approval prompt for ordinary tools is unchanged
+// from before this feature was added.
+//
+// TestSyncManager_RunInteractiveSync_NoTimeoutDeclaration_NoWarningShownは
+// 回帰テストです。「@timeout:」を宣言していないツールでは警告行が表示されず、
+// 通常ツールの承認プロンプトが本機能追加前と変わらないことを確認します。
+func TestSyncManager_RunInteractiveSync_NoTimeoutDeclaration_NoWarningShown(t *testing.T) {
+	workspaceDir := t.TempDir()
+	approvedBaseDir := t.TempDir()
+
+	stagingDir := filepath.Join(workspaceDir, "host-tools")
+	os.MkdirAll(stagingDir, 0755)
+	os.WriteFile(filepath.Join(stagingDir, "tool.sh"),
+		[]byte("#!/bin/bash\n# tool.sh\n# Plain tool\necho test\n"), 0755)
+
+	cfg := &config.HostToolsConfig{
+		Enabled:           true,
+		ApprovedDir:       approvedBaseDir,
+		StagingDirs:       []string{"host-tools"},
+		AllowedExtensions: []string{".sh"},
+		Timeout:           60,
+		MaxToolTimeout:    1800,
+	}
+
+	syncMgr := NewSyncManager(cfg, workspaceDir)
+	syncMgr.SetReader(strings.NewReader("n\n"))
+	var out bytes.Buffer
+	syncMgr.SetWriter(&out)
+
+	if _, err := syncMgr.RunInteractiveSync(); err != nil {
+		t.Fatalf("RunInteractiveSync error: %v", err)
+	}
+
+	if strings.Contains(out.String(), "@timeout") {
+		t.Errorf("expected no timeout warning for a tool without a declaration, got:\n%s", out.String())
+	}
+}
+
+// TestSyncManager_PrintTimeoutWarning_Locale verifies that the timeout
+// warning line respects the LC_ALL/LANG-based locale switch used elsewhere
+// in this codebase (see isJapaneseLocale in internal/cli/client.go and
+// writeSponsorMessage in internal/cli/serve.go): Japanese when LC_ALL or
+// LANG starts with "ja_JP" (LC_ALL taking precedence per POSIX), English
+// otherwise — and confirms the "@timeout: N" token itself is always present
+// in either language, since other tests key off that literal substring.
+//
+// TestSyncManager_PrintTimeoutWarning_Localeは、タイムアウト警告行が、
+// このコードベースの他の箇所（internal/cli/client.goのisJapaneseLocaleや
+// internal/cli/serve.goのwriteSponsorMessage）と同じLC_ALL/LANGベースの
+// 言語切り替えに従うことを確認します: LC_ALLまたはLANGが"ja_JP"で始まれば
+// 日本語（POSIXの優先順位に従いLC_ALLが優先）、そうでなければ英語になります。
+// また、どちらの言語でも「@timeout: N」というトークン自体は必ず含まれる
+// ことも確認します。他のテストがこのリテラル部分文字列に依存しているためです。
+func TestSyncManager_PrintTimeoutWarning_Locale(t *testing.T) {
+	tests := []struct {
+		name     string
+		lang     string
+		lcAll    string
+		wantText string
+	}{
+		{name: "English by default", lang: "en_US.UTF-8", lcAll: "", wantText: "Declares custom timeout"},
+		{name: "Japanese via LANG", lang: "ja_JP.UTF-8", lcAll: "", wantText: "独自のタイムアウトを宣言"},
+		{name: "Japanese via LC_ALL", lang: "en_US.UTF-8", lcAll: "ja_JP.UTF-8", wantText: "独自のタイムアウトを宣言"},
+		{name: "LC_ALL overrides LANG to English", lang: "ja_JP.UTF-8", lcAll: "en_US.UTF-8", wantText: "Declares custom timeout"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("LANG", tt.lang)
+			t.Setenv("LC_ALL", tt.lcAll)
+
+			cfg := &config.HostToolsConfig{Timeout: 60, MaxToolTimeout: 1800}
+			syncMgr := NewSyncManager(cfg, t.TempDir())
+			var out bytes.Buffer
+			syncMgr.SetWriter(&out)
+
+			syncMgr.printTimeoutWarning(SyncItem{Name: "tool.sh", Timeout: 900})
+
+			output := out.String()
+			if !strings.Contains(output, tt.wantText) {
+				t.Errorf("expected output to contain %q, got: %q", tt.wantText, output)
+			}
+			if !strings.Contains(output, "@timeout: 900") {
+				t.Errorf("expected the literal '@timeout: 900' token regardless of locale, got: %q", output)
+			}
+		})
 	}
 }
 

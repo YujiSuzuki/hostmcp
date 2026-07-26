@@ -8,9 +8,13 @@ package hosttools
 import (
 	"bufio"
 	"fmt"
+	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // ToolInfo holds parsed metadata about a host tool.
@@ -21,6 +25,55 @@ type ToolInfo struct {
 	Usage       string   `json:"usage,omitempty"`
 	Examples    []string `json:"examples,omitempty"`
 	Extension   string   `json:"extension"`
+	// Timeout is the tool's own declared execution timeout in seconds, parsed
+	// from an "@timeout: N" header line. 0 means the tool did not declare one
+	// and the caller should fall back to the global default.
+	//
+	// Timeoutはヘッダー行「@timeout: N」から解析された、ツール自身が宣言する
+	// 実行タイムアウト秒数です。0は未宣言を意味し、呼び出し側はグローバル
+	// 既定値にフォールバックする必要があります。
+	Timeout int `json:"timeout,omitempty"`
+}
+
+// maxToolTimeoutSeconds is the largest value that can be multiplied by
+// time.Second without overflowing time.Duration (an int64 count of
+// nanoseconds). A declared @timeout above this is nonsensical (it would wrap
+// around to a garbage duration) and is rejected the same way as a malformed
+// value, even though in practice max_tool_timeout clamps effective timeouts
+// to something far smaller first.
+//
+// maxToolTimeoutSecondsは、time.Duration（ナノ秒単位のint64）をオーバーフロー
+// させずにtime.Secondと掛け合わせられる最大値です。宣言された@timeoutがこれを
+// 超える場合は不正な値（ラップアラウンドしてでたらめな期間になる）として、
+// パース失敗時と同様に無視します。実際にはmax_tool_timeoutにより有効な
+// タイムアウトはこれよりずっと小さい値にクランプされますが、念のための
+// 防御的チェックです。
+const maxToolTimeoutSeconds = int(math.MaxInt64 / int64(time.Second))
+
+// parseTimeoutDirective checks whether content is an "@timeout:" header
+// directive. ok reports whether the line matched the directive (so callers
+// can treat the line as consumed either way); value is 0 when the directive
+// was present but its value was malformed, non-positive, or too large to
+// convert to time.Duration without overflow — in which case a warning is
+// logged with the source file name for diagnosis.
+//
+// parseTimeoutDirectiveは、contentが「@timeout:」ヘッダーディレクティブかどうかを
+// 判定します。okはこの行がディレクティブに一致したか（呼び出し側はいずれにせよ
+// この行を消費済み行として扱える）を示し、ディレクティブはあったが値が不正・
+// 0以下・time.Duration変換時にオーバーフローする大きさだった場合はvalueを0とし、
+// 診断用にファイル名付きで警告ログを出力します。
+func parseTimeoutDirective(content, sourceName string) (value int, ok bool) {
+	const prefix = "@timeout:"
+	if !strings.HasPrefix(content, prefix) {
+		return 0, false
+	}
+	raw := strings.TrimSpace(strings.TrimPrefix(content, prefix))
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 || n > maxToolTimeoutSeconds {
+		slog.Warn("Ignoring invalid @timeout directive", "file", sourceName, "value", raw)
+		return 0, true
+	}
+	return n, true
 }
 
 // ListTools returns metadata for all tools in the directory,
@@ -142,6 +195,13 @@ func parseGoHeader(path string) (ToolInfo, error) {
 			break
 		}
 
+		if v, matched := parseTimeoutDirective(content, name); matched {
+			if info.Timeout == 0 {
+				info.Timeout = v
+			}
+			continue
+		}
+
 		if info.Description == "" && content != "" {
 			info.Description = content
 			continue
@@ -224,6 +284,13 @@ func parseShellHeader(path string) (ToolInfo, error) {
 			break
 		}
 
+		if v, matched := parseTimeoutDirective(content, name); matched {
+			if info.Timeout == 0 {
+				info.Timeout = v
+			}
+			continue
+		}
+
 		// First non-empty line after shebang: may be filename, try next
 		if info.Description == "" && content != "" {
 			// If content looks like a filename (ends with .sh), skip it as name line
@@ -266,7 +333,19 @@ func parseShellHeader(path string) (ToolInfo, error) {
 // parsePythonHeader extracts metadata from Python # comments.
 // Similar to shell header parsing but also handles docstrings.
 //
+// Unlike shell/Go headers, there is no Usage:/Examples: section support here
+// — only Description (the first non-empty comment line) and an optional
+// @timeout: directive are recognized. Scanning continues past the
+// Description line (up to the 30-line/non-comment-line limit below) so a
+// @timeout: line can be found regardless of whether it appears before or
+// after the description line.
+//
 // parsePythonHeaderはPythonの#コメントからメタデータを抽出します。
+//
+// shell/Goのヘッダーと異なり、Usage:/Examples:セクションには対応していません
+// — Description（最初の非空コメント行）と、任意の@timeout:ディレクティブのみを
+// 認識します。@timeout:行がdescription行の前後どちらにあっても見つけられるよう、
+// Description確定後もスキャンを継続します（下記の30行制限・非コメント行までは）。
 func parsePythonHeader(path string) (ToolInfo, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -302,14 +381,20 @@ func parsePythonHeader(path string) (ToolInfo, error) {
 			if content == "" {
 				continue
 			}
+			if v, matched := parseTimeoutDirective(content, name); matched {
+				if info.Timeout == 0 {
+					info.Timeout = v
+				}
+				continue
+			}
 			if info.Description == "" {
 				info.Description = content
-				break
 			}
+			continue
 		}
 
 		// Non-comment, non-empty: stop
-		if strings.TrimSpace(line) != "" && !strings.HasPrefix(line, "#") {
+		if strings.TrimSpace(line) != "" {
 			break
 		}
 	}
