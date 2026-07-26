@@ -11,6 +11,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -2258,6 +2259,108 @@ func TestHandleMessage_BeforeInitialize(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Error("timeout waiting for error SSE message")
+	}
+}
+
+// brokenResponseWriter simulates an HTTP client whose connection for this
+// specific POST /message request has already been closed (e.g. the calling
+// MCP client gave up waiting past its own tool-call timeout): any write
+// attempt fails, mimicking a broken pipe / connection reset, while the
+// session's separate long-lived SSE connection is unaffected.
+//
+// brokenResponseWriterは、このPOST /messageリクエスト自身の接続が既に
+// 閉じられているHTTPクライアント（呼び出し元のMCPクライアントが自身の
+// ツール呼び出しタイムアウトを過ぎて諦めた場合など）をシミュレートします。
+// 書き込みは全て失敗し、broken pipe/接続リセットを模倣します。一方、
+// セッションの別の長寿命SSE接続には影響しません。
+type brokenResponseWriter struct {
+	header http.Header
+}
+
+func (w *brokenResponseWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = make(http.Header)
+	}
+	return w.header
+}
+
+func (w *brokenResponseWriter) Write([]byte) (int, error) {
+	return 0, errors.New("write: broken pipe")
+}
+
+func (w *brokenResponseWriter) WriteHeader(int) {}
+
+// TestHandleMessage_LogsWhenClientAlreadyDisconnected verifies that when the
+// specific POST /message request's own connection is already gone by the
+// time the (possibly long-running) tool call finishes — even though the
+// session's SSE connection is still alive, so the existing client.ctx.Done()
+// branch does not fire — handleMessage logs a warning instead of silently
+// discarding the write failure. This is the gap identified after a real
+// incident: a long-running host tool completed successfully on the server
+// (status 202 logged) while the calling MCP client had already given up,
+// and nothing in the logs distinguished "delivered" from "client was gone".
+//
+// TestHandleMessage_LogsWhenClientAlreadyDisconnectedは、POST /message
+// リクエスト自身の接続が（時間のかかるツール呼び出しの完了時点で）既に
+// 失われている場合——セッションのSSE接続自体は生きているため既存の
+// client.ctx.Done()分岐は発火しない——handleMessageが書き込み失敗を
+// 黙って捨てず警告ログを出すことを検証します。これは実際のインシデント
+// （長時間ホストツールがサーバー側では正常完了しstatus 202がログされた
+// 一方、呼び出し元のMCPクライアントは既に諦めており、ログからは
+// 「届いた」のか「クライアントが既にいなかった」のか区別できなかった）
+// から見つかったギャップです。
+func TestHandleMessage_LogsWhenClientAlreadyDisconnected(t *testing.T) {
+	dockerClient := &docker.Client{}
+	server := NewServer(dockerClient, 0)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /sse", server.handleSSE)
+	mux.HandleFunc("POST /message", server.handleMessage)
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	// Real SSE connection, kept open for the whole test: the session's
+	// client.ctx must stay alive so the existing "Client disconnected"
+	// branch is not what's being exercised here.
+	// テスト全体でSSE接続を開いたままにする：既存の"Client disconnected"
+	// 分岐ではなく今回のケースを検証するため、セッションのclient.ctxは
+	// 生きたままにする必要がある。
+	sessionID, _, sseResp := connectSSEAndGetSessionID(t, ts)
+	defer sseResp.Body.Close()
+
+	initReq := JSONRPCRequest{
+		JSONRPC: "2.0",
+		ID:      0,
+		Method:  "initialize",
+		Params: map[string]any{
+			"clientInfo": map[string]string{"name": "test-client", "version": "1.0.0"},
+		},
+	}
+	initBody, _ := json.Marshal(initReq)
+	initResp, err := http.Post(ts.URL+"/message?sessionId="+sessionID, "application/json", bytes.NewReader(initBody))
+	if err != nil {
+		t.Fatalf("initialize request failed: %v", err)
+	}
+	initResp.Body.Close()
+
+	lc := newLogCapture(slog.LevelWarn)
+	restore := lc.install()
+	defer restore()
+
+	// Call handleMessage directly (bypassing the network) with a
+	// ResponseWriter that fails every write, standing in for a POST
+	// connection the client has already torn down.
+	// ネットワークを経由せず、全ての書き込みが失敗するResponseWriterを
+	// 使ってhandleMessageを直接呼び出す。これはクライアントが既に
+	// 切断したPOST接続の代わりとなる。
+	toolListReq := JSONRPCRequest{JSONRPC: "2.0", ID: 1, Method: "tools/list"}
+	body, _ := json.Marshal(toolListReq)
+	req := httptest.NewRequest("POST", "/message?sessionId="+sessionID, bytes.NewReader(body))
+
+	server.handleMessage(&brokenResponseWriter{}, req)
+
+	if !lc.WaitFor(t, "client", 2*time.Second) {
+		t.Errorf("expected a warning log noting the response could not be delivered, got: %q", lc.String())
 	}
 }
 

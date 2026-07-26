@@ -908,6 +908,39 @@ The declared value only takes effect once the script is approved via `hostmcp to
 
 A declared value above `max_tool_timeout` is clamped, not honored as-is — this ceiling can only be raised by a human editing `hostmcp.yaml`, never by an AI or by a script declaring a larger value. If a run is cut short this way, the timeout error explains that the ceiling (not the declaration) is the binding constraint, since re-declaring a larger `@timeout:` would have no effect.
 
+#### `client_timeout_seconds`: Avoiding a Client/Server Timeout Mismatch
+
+HostMCP's own execution timeout (above) is independent from how long the *calling MCP client* is willing to wait for a `run_host_tool` response — the server has no way to know that on its own. If a tool's execution timeout exceeds HostMCP's global default (`host_access.host_tools.timeout`) and the client gives up waiting before the tool finishes, the tool still runs to completion on the host, but the result is never delivered — wasting the run for nothing.
+
+To avoid this, `run_host_tool` accepts an optional `client_timeout_seconds` argument: the number of seconds the calling MCP client will actually wait for this call's response (e.g. its own `MCP_TOOL_TIMEOUT` in milliseconds divided by 1000, or the `--timeout` value it would pass to `hostmcp client`). This is **only required when the tool's own effective timeout exceeds the global default** — ordinary, fast tools are unaffected and never need to declare it.
+
+When required and missing, or declared too low, HostMCP refuses to run the tool at all rather than executing it on the host only for the client to give up before the result arrives:
+
+```
+this tool's execution timeout (600s) exceeds the server default (60s); pass
+client_timeout_seconds (>= 600s) so the server can confirm your MCP client
+will wait long enough — otherwise the tool would run on the host only for
+your client to give up before the result arrives. Note: client_timeout_seconds
+is a self-reported value only, it does not itself make your client wait
+longer — if calling run_host_tool directly won't actually wait 600 seconds,
+call it via `hostmcp client --timeout 600` instead (e.g. in a backgrounded
+shell call) and only pass client_timeout_seconds=600 once you are actually
+calling it that way
+```
+
+```
+declared client_timeout_seconds (120s) is shorter than this tool's actual
+execution timeout (600s); refusing to run it on the host to avoid wasting
+the run. Note: client_timeout_seconds is a self-reported value only, raising
+it here will not itself make your client wait longer — if calling
+run_host_tool directly won't actually wait 600 seconds, call it via
+`hostmcp client --timeout 600` instead (e.g. in a backgrounded shell call)
+and only pass client_timeout_seconds=600 once you are actually calling it
+that way
+```
+
+This check is a pre-flight guard only — it does not itself change how long the tool actually runs (that's still controlled by `@timeout` and `max_tool_timeout` above), and it does not detect an already-mismatched client after the fact; it simply refuses to start a run that looks likely to be abandoned. Critically, declaring `client_timeout_seconds` is a self-report, not a directive — it does not itself extend how long the calling client actually waits. A caller that declares a large value without actually switching to a call path that waits that long (e.g. `hostmcp client --timeout` in the background, instead of a direct blocking call) will pass this check and still lose the result to its own real timeout.
+
 #### Large Output Handling
 
 When a host tool produces output exceeding `max_output_bytes`, HostMCP saves the full output to a file and returns a path and preview to the AI instead. This prevents large build logs or test reports from overflowing the AI's context window.

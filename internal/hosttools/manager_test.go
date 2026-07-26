@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/YujiSuzuki/hostmcp/internal/config"
 )
@@ -274,6 +275,103 @@ func TestManager_RunTool_NoDeclaration_UsesGlobalDefault(t *testing.T) {
 	_, err := m.RunTool("plain.sh", nil)
 	if err == nil {
 		t.Error("RunTool should time out using the global default when no @timeout is declared")
+	}
+}
+
+// TestManager_EffectiveTimeout_Declared verifies that EffectiveTimeout reports
+// a tool's own declared "@timeout:" value without actually running the tool,
+// mirroring what RunTool would enforce.
+//
+// TestManager_EffectiveTimeout_Declaredは、ツールを実際に実行せずに、
+// ツール自身が宣言した「@timeout:」値をEffectiveTimeoutが返すことを
+// 確認します（RunToolが実際に適用する値と一致することを検証）。
+func TestManager_EffectiveTimeout_Declared(t *testing.T) {
+	dir := t.TempDir()
+	toolsDir := filepath.Join(dir, "tools")
+	os.MkdirAll(toolsDir, 0755)
+	os.WriteFile(filepath.Join(toolsDir, "slow.sh"),
+		[]byte("#!/bin/bash\n# slow.sh\n# @timeout: 3\n# Slow tool\necho done\n"), 0755)
+
+	cfg := &config.HostToolsConfig{
+		Enabled:           true,
+		Directories:       []string{"tools"},
+		AllowedExtensions: []string{".sh"},
+		Timeout:           1,
+		MaxToolTimeout:    5,
+	}
+	m := NewManager(cfg, dir)
+
+	got, err := m.EffectiveTimeout("slow.sh")
+	if err != nil {
+		t.Fatalf("EffectiveTimeout error: %v", err)
+	}
+	if got != 3*time.Second {
+		t.Errorf("EffectiveTimeout = %v, want 3s", got)
+	}
+}
+
+// TestManager_EffectiveTimeout_Clamped verifies that EffectiveTimeout applies
+// the max_tool_timeout ceiling, so callers pre-checking before RunTool see
+// the same clamped value RunTool will actually enforce.
+//
+// TestManager_EffectiveTimeout_Clampedは、EffectiveTimeoutがmax_tool_timeout
+// の上限を適用することを確認します。RunTool呼び出し前に事前チェックする
+// 呼び出し元が、RunToolが実際に適用するのと同じクランプ後の値を見られる
+// ようにするためです。
+func TestManager_EffectiveTimeout_Clamped(t *testing.T) {
+	dir := t.TempDir()
+	toolsDir := filepath.Join(dir, "tools")
+	os.MkdirAll(toolsDir, 0755)
+	os.WriteFile(filepath.Join(toolsDir, "greedy.sh"),
+		[]byte("#!/bin/bash\n# greedy.sh\n# @timeout: 10\n# Greedy tool\necho done\n"), 0755)
+
+	cfg := &config.HostToolsConfig{
+		Enabled:           true,
+		Directories:       []string{"tools"},
+		AllowedExtensions: []string{".sh"},
+		Timeout:           1,
+		MaxToolTimeout:    1,
+	}
+	m := NewManager(cfg, dir)
+
+	got, err := m.EffectiveTimeout("greedy.sh")
+	if err != nil {
+		t.Fatalf("EffectiveTimeout error: %v", err)
+	}
+	if got != 1*time.Second {
+		t.Errorf("EffectiveTimeout = %v, want 1s (clamped)", got)
+	}
+}
+
+// TestManager_EffectiveTimeout_NoDeclaration_UsesGlobalDefault verifies that
+// EffectiveTimeout falls back to the global default for a tool that declares
+// no "@timeout:" of its own.
+//
+// TestManager_EffectiveTimeout_NoDeclaration_UsesGlobalDefaultは、
+// 「@timeout:」を宣言していないツールに対して、EffectiveTimeoutが
+// グローバル既定値にフォールバックすることを確認します。
+func TestManager_EffectiveTimeout_NoDeclaration_UsesGlobalDefault(t *testing.T) {
+	dir := t.TempDir()
+	toolsDir := filepath.Join(dir, "tools")
+	os.MkdirAll(toolsDir, 0755)
+	os.WriteFile(filepath.Join(toolsDir, "plain.sh"),
+		[]byte("#!/bin/bash\n# plain.sh\n# Plain tool\necho done\n"), 0755)
+
+	cfg := &config.HostToolsConfig{
+		Enabled:           true,
+		Directories:       []string{"tools"},
+		AllowedExtensions: []string{".sh"},
+		Timeout:           1,
+		MaxToolTimeout:    5,
+	}
+	m := NewManager(cfg, dir)
+
+	got, err := m.EffectiveTimeout("plain.sh")
+	if err != nil {
+		t.Fatalf("EffectiveTimeout error: %v", err)
+	}
+	if got != 1*time.Second {
+		t.Errorf("EffectiveTimeout = %v, want 1s (global default)", got)
 	}
 }
 

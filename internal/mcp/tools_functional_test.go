@@ -1613,6 +1613,200 @@ func TestToolRunHostTool_TimeoutHint_ClampedByCeiling(t *testing.T) {
 	}
 }
 
+// TestToolRunHostTool_ClientTimeoutSeconds_Missing verifies that calling a
+// tool whose effective timeout exceeds the server's global default, without
+// declaring client_timeout_seconds, is refused before the tool ever runs.
+// The marker file check proves this is a genuine pre-flight refusal (no
+// wasted host-side execution), not just an error returned after running.
+//
+// TestToolRunHostTool_ClientTimeoutSeconds_Missingは、実効タイムアウトが
+// サーバーのグローバル既定値を超えるツールを、client_timeout_secondsを
+// 宣言せずに呼び出すと、ツールが実行される前に拒否されることを確認します。
+// マーカーファイルの確認により、これが単に実行後にエラーが返るのではなく、
+// 本当に実行前の拒否（無駄なホスト側実行が発生しない）であることを証明します。
+func TestToolRunHostTool_ClientTimeoutSeconds_Missing(t *testing.T) {
+	policy := createTestPolicy()
+	mockClient := docker.NewMockClient(policy)
+	ctx := context.Background()
+
+	dir := t.TempDir()
+	toolsDir := dir + "/tools"
+	os.MkdirAll(toolsDir, 0755)
+
+	marker := dir + "/ran"
+	os.WriteFile(toolsDir+"/slow.sh",
+		[]byte("#!/bin/bash\n# slow.sh\n# @timeout: 5\n# Slow tool\ntouch "+marker+"\necho done\n"), 0755)
+
+	htCfg := &configPkg.HostToolsConfig{
+		Enabled:           true,
+		Directories:       []string{"tools"},
+		AllowedExtensions: []string{".sh"},
+		Timeout:           1,
+	}
+	mgr := hosttools.NewManager(htCfg, dir)
+	server := NewServer(mockClient, 8080, WithHostToolsManager(mgr))
+
+	_, err := server.toolRunHostTool(ctx, map[string]any{"name": "slow.sh"})
+	if err == nil {
+		t.Fatal("expected error when client_timeout_seconds is missing for a tool whose timeout exceeds the default")
+	}
+	if !strings.Contains(err.Error(), "client_timeout_seconds") {
+		t.Errorf("expected error to mention client_timeout_seconds, got: %v", err)
+	}
+	// Passing client_timeout_seconds is a self-report; it doesn't itself make
+	// the caller's client wait any longer. The error must say so and point to
+	// the workaround that actually does (hostmcp client --timeout in the
+	// background) — otherwise a caller will just add the parameter, still
+	// give up at its real timeout, and waste the run anyway.
+	if !strings.Contains(err.Error(), "self-reported") {
+		t.Errorf("expected error to clarify client_timeout_seconds is self-reported, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "hostmcp client --timeout") {
+		t.Errorf("expected error to point to the hostmcp client --timeout workaround, got: %v", err)
+	}
+	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+		t.Error("tool should not have run before the client_timeout_seconds check — marker file should not exist")
+	}
+}
+
+// TestToolRunHostTool_ClientTimeoutSeconds_TooLow verifies the same pre-flight
+// refusal when client_timeout_seconds is provided but shorter than the tool's
+// actual execution timeout.
+//
+// TestToolRunHostTool_ClientTimeoutSeconds_TooLowは、client_timeout_seconds
+// が指定されていても、ツールの実際の実行タイムアウトより短い場合に、
+// 同様に実行前拒否となることを確認します。
+func TestToolRunHostTool_ClientTimeoutSeconds_TooLow(t *testing.T) {
+	policy := createTestPolicy()
+	mockClient := docker.NewMockClient(policy)
+	ctx := context.Background()
+
+	dir := t.TempDir()
+	toolsDir := dir + "/tools"
+	os.MkdirAll(toolsDir, 0755)
+
+	marker := dir + "/ran"
+	os.WriteFile(toolsDir+"/slow.sh",
+		[]byte("#!/bin/bash\n# slow.sh\n# @timeout: 5\n# Slow tool\ntouch "+marker+"\necho done\n"), 0755)
+
+	htCfg := &configPkg.HostToolsConfig{
+		Enabled:           true,
+		Directories:       []string{"tools"},
+		AllowedExtensions: []string{".sh"},
+		Timeout:           1,
+	}
+	mgr := hosttools.NewManager(htCfg, dir)
+	server := NewServer(mockClient, 8080, WithHostToolsManager(mgr))
+
+	_, err := server.toolRunHostTool(ctx, map[string]any{
+		"name":                   "slow.sh",
+		"client_timeout_seconds": float64(3),
+	})
+	if err == nil {
+		t.Fatal("expected error when client_timeout_seconds is shorter than the tool's effective timeout")
+	}
+	if !strings.Contains(err.Error(), "client_timeout_seconds") {
+		t.Errorf("expected error to mention client_timeout_seconds, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "self-reported") {
+		t.Errorf("expected error to clarify client_timeout_seconds is self-reported, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "hostmcp client --timeout") {
+		t.Errorf("expected error to point to the hostmcp client --timeout workaround, got: %v", err)
+	}
+	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+		t.Error("tool should not have run — marker file should not exist")
+	}
+}
+
+// TestToolRunHostTool_ClientTimeoutSeconds_Sufficient verifies normal
+// execution when client_timeout_seconds is at least as large as the tool's
+// effective timeout.
+//
+// TestToolRunHostTool_ClientTimeoutSeconds_Sufficientは、
+// client_timeout_secondsがツールの実効タイムアウト以上であれば、
+// 通常通り実行されることを確認します。
+func TestToolRunHostTool_ClientTimeoutSeconds_Sufficient(t *testing.T) {
+	policy := createTestPolicy()
+	mockClient := docker.NewMockClient(policy)
+	ctx := context.Background()
+
+	dir := t.TempDir()
+	toolsDir := dir + "/tools"
+	os.MkdirAll(toolsDir, 0755)
+
+	os.WriteFile(toolsDir+"/slow.sh",
+		[]byte("#!/bin/bash\n# slow.sh\n# @timeout: 5\n# Slow tool\necho done\n"), 0755)
+
+	htCfg := &configPkg.HostToolsConfig{
+		Enabled:           true,
+		Directories:       []string{"tools"},
+		AllowedExtensions: []string{".sh"},
+		Timeout:           1,
+	}
+	mgr := hosttools.NewManager(htCfg, dir)
+	server := NewServer(mockClient, 8080, WithHostToolsManager(mgr))
+
+	result, err := server.toolRunHostTool(ctx, map[string]any{
+		"name":                   "slow.sh",
+		"client_timeout_seconds": float64(5),
+	})
+	if err != nil {
+		t.Fatalf("toolRunHostTool returned error: %v", err)
+	}
+
+	resultMap := result.(map[string]any)
+	content := resultMap["content"].([]map[string]any)
+	text := content[0]["text"].(string)
+	if !strings.Contains(text, "done") {
+		t.Errorf("expected tool output, got: %s", text)
+	}
+}
+
+// TestToolRunHostTool_ClientTimeoutSeconds_NotRequiredForFastTool is a
+// regression test confirming that ordinary tools whose effective timeout
+// does not exceed the global default keep running without
+// client_timeout_seconds, exactly as before this feature existed.
+//
+// TestToolRunHostTool_ClientTimeoutSeconds_NotRequiredForFastToolは、
+// 実効タイムアウトがグローバル既定値を超えない通常のツールが、
+// 本機能追加前と変わらずclient_timeout_seconds無しで実行できることを
+// 確認する回帰テストです。
+func TestToolRunHostTool_ClientTimeoutSeconds_NotRequiredForFastTool(t *testing.T) {
+	policy := createTestPolicy()
+	mockClient := docker.NewMockClient(policy)
+	ctx := context.Background()
+
+	dir := t.TempDir()
+	toolsDir := dir + "/tools"
+	os.MkdirAll(toolsDir, 0755)
+	os.WriteFile(toolsDir+"/greet.sh", []byte("#!/bin/bash\n# greet.sh\n# Greet tool\necho \"Hello $1\"\n"), 0755)
+
+	htCfg := &configPkg.HostToolsConfig{
+		Enabled:           true,
+		Directories:       []string{"tools"},
+		AllowedExtensions: []string{".sh"},
+		Timeout:           30,
+	}
+	mgr := hosttools.NewManager(htCfg, dir)
+	server := NewServer(mockClient, 8080, WithHostToolsManager(mgr))
+
+	result, err := server.toolRunHostTool(ctx, map[string]any{
+		"name": "greet.sh",
+		"args": []any{"World"},
+	})
+	if err != nil {
+		t.Fatalf("toolRunHostTool returned error: %v", err)
+	}
+
+	resultMap := result.(map[string]any)
+	content := resultMap["content"].([]map[string]any)
+	text := content[0]["text"].(string)
+	if !strings.Contains(text, "Hello World") {
+		t.Errorf("expected output to contain 'Hello World', got: %s", text)
+	}
+}
+
 // TestToolExecHostCommand_Functional tests the exec_host_command tool handler.
 // TestToolExecHostCommand_Functionalはexec_host_command MCPツールハンドラーをテストします。
 func TestToolExecHostCommand_Functional(t *testing.T) {

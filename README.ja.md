@@ -908,6 +908,39 @@ package main
 
 `max_tool_timeout` を超える宣言値はそのまま使われず、クランプされます — この上限自体は人間がhostmcp.yamlを編集して初めて引き上げられ、AIやスクリプトが大きな値を宣言するだけでは変更できません。この理由で実行が打ち切られた場合、タイムアウトエラーには「宣言値ではなく上限が実際の制約になっている」ことが明記されます（より大きな `@timeout:` を再宣言しても効果がないため）。
 
+#### `client_timeout_seconds`: クライアント/サーバー間のタイムアウトのミスマッチを防ぐ
+
+上記のHostMCP自身の実行タイムアウトは、**呼び出し元のMCPクライアント**が`run_host_tool`のレスポンスをどれだけ待つ気があるかとは独立しており、サーバー側にはそれを知る手段がありません。ツールの実行タイムアウトがHostMCPのグローバル既定値（`host_access.host_tools.timeout`）を超えており、かつクライアントがツール完了前に待つのを諦めてしまうと、ツール自体はホスト上で最後まで実行されますが、その結果は届かず、実行が無駄になります。
+
+これを防ぐため、`run_host_tool`は任意引数`client_timeout_seconds`を受け付けます — これは呼び出し元のMCPクライアントがこの呼び出しのレスポンスを実際に何秒待つか（例えば自身の`MCP_TOOL_TIMEOUT`をミリ秒からミリ秒/1000した値、あるいは`hostmcp client`に渡す`--timeout`の値）を示すものです。これが**必須になるのは、ツールの実効タイムアウトがグローバル既定値を超える場合のみ**です — 通常の高速なツールには影響がなく、宣言する必要は一切ありません。
+
+必須なのに未指定、または指定値が低すぎる場合、HostMCPはツールをホスト上で実行してクライアントが結果到着前に諦めるという事態を避けるため、そもそも実行自体を拒否します:
+
+```
+this tool's execution timeout (600s) exceeds the server default (60s); pass
+client_timeout_seconds (>= 600s) so the server can confirm your MCP client
+will wait long enough — otherwise the tool would run on the host only for
+your client to give up before the result arrives. Note: client_timeout_seconds
+is a self-reported value only, it does not itself make your client wait
+longer — if calling run_host_tool directly won't actually wait 600 seconds,
+call it via `hostmcp client --timeout 600` instead (e.g. in a backgrounded
+shell call) and only pass client_timeout_seconds=600 once you are actually
+calling it that way
+```
+
+```
+declared client_timeout_seconds (120s) is shorter than this tool's actual
+execution timeout (600s); refusing to run it on the host to avoid wasting
+the run. Note: client_timeout_seconds is a self-reported value only, raising
+it here will not itself make your client wait longer — if calling
+run_host_tool directly won't actually wait 600 seconds, call it via
+`hostmcp client --timeout 600` instead (e.g. in a backgrounded shell call)
+and only pass client_timeout_seconds=600 once you are actually calling it
+that way
+```
+
+このチェックはあくまで事前ガードです — ツールが実際に実行される時間そのものを変更するものではなく（それは引き続き上記の`@timeout`と`max_tool_timeout`が制御します）、また既にミスマッチが起きてしまったクライアントを事後的に検知するものでもありません。単に「諦められる可能性が高い実行」を、開始する前に拒否するだけです。重要な点として、`client_timeout_seconds`の宣言はあくまで自己申告であって指示ではありません — これを宣言すること自体は、呼び出し元クライアントが実際に待つ時間を延ばしません。実際にそこまで待てる呼び出し経路（直接のブロッキング呼び出しではなく、バックグラウンドでの`hostmcp client --timeout`など）に切り替えないまま大きな値だけを宣言した呼び出し元は、このチェックは通過しても、結局自分自身の本当のタイムアウトで結果を失うことになります。
+
 #### 大きな出力の処理
 
 ホストツールの出力が `max_output_bytes` を超えると、HostMCP は全出力をファイルに保存し、AIにはパスとプレビューを返します。大きなビルドログやテストレポートが AI のコンテキストを圧迫するのを防ぎます。

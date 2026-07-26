@@ -208,25 +208,69 @@ func (m *Manager) RunTool(name string, args []string) (*Result, error) {
 	return nil, fmt.Errorf("tool not found: %s", name)
 }
 
-// effectiveTimeout resolves the actual timeout to use for a tool run: its own
+// resolveTimeout computes the actual timeout to use for a tool run: its own
 // declared "@timeout:" value if present, clamped to MaxToolTimeout (unless
-// MaxToolTimeout is 0, meaning no ceiling); otherwise the global default.
+// MaxToolTimeout is 0, meaning no ceiling); otherwise the global default. It
+// also reports whether clamping occurred, so callers can decide for
+// themselves whether that fact is worth logging (see effectiveTimeout vs.
+// EffectiveTimeout below — only the former logs, since only it corresponds
+// to a run that is actually about to happen on the host).
 //
-// effectiveTimeoutは、ツール実行に実際に使うタイムアウトを決定します:
+// resolveTimeoutは、ツール実行に実際に使うタイムアウトを計算します:
 // ツール自身が宣言した「@timeout:」値があればそれを使い、MaxToolTimeoutで
 // クランプします（MaxToolTimeoutが0の場合は上限なし）。宣言が無ければ
-// グローバル既定値を使います。
-func (m *Manager) effectiveTimeout(info ToolInfo) time.Duration {
-	effective := m.config.Timeout
+// グローバル既定値を使います。クランプが発生したかどうかも返すため、
+// 呼び出し元はそれをログに残す価値があるかどうかを自分で判断できます
+// （下記のeffectiveTimeoutとEffectiveTimeoutの違いを参照 — 実際にホスト上で
+// 実行が始まろうとしているeffectiveTimeoutのみがログを出します）。
+func (m *Manager) resolveTimeout(info ToolInfo) (effective time.Duration, declared int, clampedTo int, wasClamped bool) {
+	declared = m.config.Timeout
 	if info.Timeout > 0 {
-		effective = info.Timeout
+		declared = info.Timeout
 	}
-	if m.config.MaxToolTimeout > 0 && effective > m.config.MaxToolTimeout {
+	eff := declared
+	if m.config.MaxToolTimeout > 0 && eff > m.config.MaxToolTimeout {
+		wasClamped = true
+		clampedTo = m.config.MaxToolTimeout
+		eff = m.config.MaxToolTimeout
+	}
+	return time.Duration(eff) * time.Second, declared, clampedTo, wasClamped
+}
+
+// effectiveTimeout resolves the timeout for a tool run that is actually about
+// to happen, logging a warning if the declared value gets clamped.
+//
+// effectiveTimeoutは、これから実際に行われるツール実行のタイムアウトを
+// 解決します。宣言値がクランプされた場合は警告をログに出します。
+func (m *Manager) effectiveTimeout(info ToolInfo) time.Duration {
+	eff, declared, clampedTo, wasClamped := m.resolveTimeout(info)
+	if wasClamped {
 		slog.Warn("Clamping declared tool timeout to max_tool_timeout ceiling",
-			"tool", info.Name, "declared", effective, "clamped_to", m.config.MaxToolTimeout)
-		effective = m.config.MaxToolTimeout
+			"tool", info.Name, "declared", declared, "clamped_to", clampedTo)
 	}
-	return time.Duration(effective) * time.Second
+	return eff
+}
+
+// EffectiveTimeout resolves the timeout RunTool would actually apply to the
+// named tool, without running it and without logging — callers use this to
+// pre-check whether their own wait budget is long enough before starting a
+// potentially long-running host tool, and the tool may end up never running
+// at all (e.g. the pre-check itself fails), so it must not emit the same
+// warning effectiveTimeout does for a real run.
+//
+// EffectiveTimeoutは、指定されたツールをRunToolが実行した場合に実際に
+// 適用されるタイムアウト値を、ツールを実行せず、ログも出さずに解決します。
+// 呼び出し元はこれを使って、時間のかかる可能性のあるホストツールを開始する
+// 前に、自身の待ち時間予算が十分かどうかを事前にチェックできます。この
+// 事前チェック自体が失敗してツールが結局一度も実行されない場合もあるため、
+// effectiveTimeoutが実際の実行時に出すのと同じ警告をここで出してはいけません。
+func (m *Manager) EffectiveTimeout(name string) (time.Duration, error) {
+	info, err := m.GetToolInfo(name)
+	if err != nil {
+		return 0, err
+	}
+	eff, _, _, _ := m.resolveTimeout(info)
+	return eff, nil
 }
 
 // PendingApproval returns the host tools that are staged (in the staging

@@ -606,7 +606,23 @@ func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
 		// POSTリクエストへのACK - メッセージが受け入れられたことを示す
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
-		json.NewEncoder(w).Encode(map[string]string{"status": "accepted"})
+		if err := json.NewEncoder(w).Encode(map[string]string{"status": "accepted"}); err != nil {
+			// This POST request's own connection is gone even though the
+			// session's separate long-lived SSE connection (client.ctx) is
+			// still alive, so the "Client disconnected" case below never
+			// fires for this. Without logging this, a slow tool call that
+			// finishes successfully after the calling client already gave
+			// up on this specific request looks identical in the logs to
+			// one whose result was actually delivered.
+			// このPOSTリクエスト自身の接続は失われているが、セッションの
+			// 別の長寿命SSE接続（client.ctx）は生きているため、下の
+			// "Client disconnected"分岐はこのケースでは発火しない。これを
+			// ログに残さないと、呼び出し元クライアントがこの個別リクエストを
+			// 既に諦めた後に完了した低速なツール呼び出しが、結果が実際に
+			// 届いた場合とログ上で見分けがつかなくなる。
+			slog.Warn("Failed to write acceptance response — client's connection for this request may already be closed",
+				"id", req.ID, "error", err)
+		}
 	case <-client.ctx.Done():
 		// Client has disconnected
 		// クライアントが切断された
@@ -959,7 +975,20 @@ func sendErrorViaSSE(w http.ResponseWriter, c *client, id any, code int, message
 		// POSTリクエストへのACK
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
-		json.NewEncoder(w).Encode(map[string]string{"status": "accepted"})
+		if err := json.NewEncoder(w).Encode(map[string]string{"status": "accepted"}); err != nil {
+			// Same gap as in handleMessage above: this POST request's own
+			// connection is gone even though the session's SSE connection
+			// (c.ctx) is still alive, so "Client disconnected" below never
+			// fires for this. Log it so a delivered error and an abandoned
+			// one aren't indistinguishable in the logs.
+			// 上のhandleMessageと同じ穴：このPOSTリクエスト自身の接続は
+			// 失われているが、セッションのSSE接続（c.ctx）は生きているため、
+			// 下の"Client disconnected"はこのケースでは発火しない。届いた
+			// エラーと放棄されたエラーがログ上で見分けられなくならないよう
+			// 記録する。
+			slog.Warn("Failed to write acceptance response — client's connection for this request may already be closed",
+				"id", id, "error", err)
+		}
 	case <-c.ctx.Done():
 		// Client has disconnected
 		// クライアントが切断された
