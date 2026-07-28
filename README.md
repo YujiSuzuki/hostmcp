@@ -1298,3 +1298,12 @@ MIT License - See [LICENSE](LICENSE)
 ---
 
 **Note**: HostMCP provides controlled access, but use it responsibly. Always review your security settings before exposing containers to AI assistants.
+
+
+
+## Consulting / Hire Me
+
+Open to consulting on MCP server security and AI agent sandbox design.
+
+- GitHub: https://github.com/YujiSuzuki
+- LinkedIn: https://www.linkedin.com/in/yuji-suzuki-dev

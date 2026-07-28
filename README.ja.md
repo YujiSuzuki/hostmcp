@@ -1298,3 +1298,11 @@ MIT License - [LICENSE](LICENSE) ファイルを参照
 ---
 
 **注意**: HostMCPは制御されたアクセスを提供しますが、責任を持って使用してください。AIアシスタントに公開する前に、必ずセキュリティ設定を確認してください。
+
+
+## コンサルティング / お仕事のご依頼
+
+MCPサーバーのセキュリティおよびAIエージェントのサンドボックス設計に関するコンサルティングを承っています。
+
+- GitHub: https://github.com/YujiSuzuki
+- LinkedIn: https://www.linkedin.com/in/yuji-suzuki-dev
