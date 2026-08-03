@@ -63,8 +63,12 @@ type ServerConfig struct {
 	// Portは待ち受けるTCPポートです（デフォルト: 18080）
 	Port int `yaml:"port"`
 
-	// Host is the network interface to bind to (default: "0.0.0.0" = all interfaces)
-	// Hostはバインドするネットワークインターフェースです（デフォルト: "0.0.0.0" = 全インターフェース）
+	// Host is the network interface to bind to (default: "127.0.0.1" = loopback only).
+	// HostMCP has no authentication, so binding to all interfaces ("0.0.0.0") exposes
+	// it to every machine on the local network. Set this explicitly to opt into that.
+	// Hostはバインドするネットワークインターフェースです（デフォルト: "127.0.0.1" = ループバックのみ）。
+	// HostMCPには認証機能がないため、全インターフェース（"0.0.0.0"）にバインドすると
+	// 同一ネットワーク上の全端末に公開されます。それを望む場合は明示的に設定してください。
 	Host string `yaml:"host"`
 }
 
@@ -745,7 +749,7 @@ func NewDefaultConfig() *Config {
 	return &Config{
 		Server: ServerConfig{
 			Port: 18080,
-			Host: "0.0.0.0",
+			Host: "127.0.0.1",
 		},
 		Security: SecurityConfig{
 			Mode: "moderate",

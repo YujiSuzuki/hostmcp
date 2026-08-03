@@ -421,10 +421,10 @@ security:
 		t.Errorf("Server.Port = %d, want 18080", cfg.Server.Port)
 	}
 
-	// Verify default host is applied (should be "0.0.0.0")
-	// デフォルトホストが適用されていることを確認（"0.0.0.0"のはず）
-	if cfg.Server.Host != "0.0.0.0" {
-		t.Errorf("Server.Host = %q, want \"0.0.0.0\"", cfg.Server.Host)
+	// Verify default host is applied (should be "127.0.0.1")
+	// デフォルトホストが適用されていることを確認（"127.0.0.1"のはず）
+	if cfg.Server.Host != "127.0.0.1" {
+		t.Errorf("Server.Host = %q, want \"127.0.0.1\"", cfg.Server.Host)
 	}
 
 	// Verify default log level is applied (should be "info")
