@@ -48,6 +48,23 @@ func GetHostTools() []Tool {
 				Required: []string{"name"},
 			},
 		},
+		// This schema's arguments are independently reconstructed by
+		// internal/cli's HTTPBackend.RunHostTool (backend.go) for the
+		// `hostmcp client host-tools run` CLI path. Adding or renaming an
+		// argument here does not update that other implementation — grep
+		// internal/cli for the argument name and update it too, or a CLI
+		// caller will silently omit it (as client_timeout_seconds did before
+		// it was forwarded; see CheckClientTimeoutArgs and
+		// TestHTTPBackend_RunHostTool_SatisfiesServerClientTimeoutCheck).
+		//
+		// このスキーマの引数は、`hostmcp client host-tools run`というCLI経路
+		// 用に、internal/cliのHTTPBackend.RunHostTool（backend.go）が独立に
+		// 再構築しています。ここで引数を追加・変更しても、もう一方の実装は
+		// 追従しません——internal/cliをその引数名でgrepして更新してください。
+		// さもないとCLI側の呼び出し元が無言でその引数を送らなくなります
+		// （client_timeout_secondsが転送されるようになる前がまさにそうでした。
+		// CheckClientTimeoutArgsとTestHTTPBackend_RunHostTool_
+		// SatisfiesServerClientTimeoutCheckを参照）。
 		{
 			Name:        "run_host_tool",
 			Description: "Execute a host tool. Host tools are scripts/programs in configured directories on the host OS.",

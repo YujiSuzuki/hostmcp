@@ -1,10 +1,18 @@
-# HostMCP - Comment Conventions for AI Assistants
+# HostMCP - Conventions for AI Assistants
 
 > **Language policy:** This file is written in English. Source code comments in this repo follow the bilingual EN/JA convention (an English explanation immediately followed by its Japanese translation) already used throughout `internal/`.
 
-## Scope
+## Changing an MCP Tool's Argument Contract
 
-This file documents comment style for the hostmcp repository. When nested inside a parent workspace that defines its own default comment style (see that workspace's root `CLAUDE.md`), this file intentionally overrides that default for this repository only.
+`internal/mcp` defines each MCP tool's argument schema (in `Get*Tools()` functions like `GetHostTools()`), but that schema is not the only implementation of the wire contract it describes: `internal/cli`'s `HTTPBackend` methods (`backend.go`) independently reconstruct the arguments for the same tools, for the `hostmcp client` CLI fallback path. Nothing ties these two to the same source of truth.
+
+**When you add, rename, or change the meaning of an MCP tool's argument, grep `internal/cli` for that tool name and argument, and update/test the CLI side in the same change.** A tool argument added only in `internal/mcp` will silently never be sent by CLI callers — they won't error, they'll just omit it, which is exactly what happened before `client_timeout_seconds` was forwarded (see `internal/cli/backend.go`'s `RunHostTool` and `internal/mcp/tools_host.go`'s `CheckClientTimeoutArgs`).
+
+Where the server has real validation/decision logic for an argument (not just "is it present"), prefer exporting that logic as a pure function (as `CheckClientTimeoutArgs` is) so `internal/cli`'s tests can assert against the actual logic instead of a hand-rolled mock. A mock that unconditionally echoes success cannot catch drift between what the CLI sends and what the server actually requires — that gap is exactly how the bug above went unnoticed for a month.
+
+## Comment Conventions
+
+This section documents comment style for the hostmcp repository. When nested inside a parent workspace that defines its own default comment style (see that workspace's root `CLAUDE.md`), this section intentionally overrides that default for this repository only.
 
 ## Why this repo comments differently
 
