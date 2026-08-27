@@ -40,13 +40,32 @@ var clientHostToolsInfoCmd = &cobra.Command{
 }
 
 // clientHostToolsRunCmd executes a host tool.
+//
+// ARGS must follow a "--" separator so pflag stops parsing them as flags of
+// this command: without it, a host tool argument like "--wait" is mistaken
+// for an unrecognized flag of clientHostToolsRunCmd itself (or, worse, one
+// that happens to share a name with a global client flag, such as
+// "--timeout", is silently consumed by that flag instead of being forwarded
+// to the tool).
+//
 // clientHostToolsRunCmdはホストツールを実行します。
+//
+// ARGSは"--"区切りの後に置く必要があります。これが無いと、pflagが
+// "--wait"のようなホストツール側の引数をこのコマンド自身の未知のフラグと
+// 誤認してエラーになります（さらに悪いことに、"--timeout"のようにグローバル
+// なクライアントフラグと同名の引数は、ツールに転送されずそのフラグに
+// 無言で吸収されてしまいます）。
 var clientHostToolsRunCmd = &cobra.Command{
-	Use:   "run NAME [ARGS...]",
+	Use:   "run NAME [-- ARGS...]",
 	Short: "Execute a host tool",
-	Long:  `Execute a host tool with optional arguments through the HostMCP server.`,
-	Args:  cobra.MinimumNArgs(1),
-	RunE:  runClientHostToolsRun,
+	Long: `Execute a host tool with optional arguments through the HostMCP server.
+
+Arguments for the host tool itself must come after a "--" separator, so they
+are not mistaken for flags of this command (e.g. --url, --timeout):
+
+  hostmcp client host-tools run NAME -- --wait 5 --scheme MyApp`,
+	Args: cobra.MinimumNArgs(1),
+	RunE: runClientHostToolsRun,
 }
 
 func init() {

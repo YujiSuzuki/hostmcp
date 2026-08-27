@@ -12,8 +12,10 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/YujiSuzuki/hostmcp/internal/docker"
+	"github.com/YujiSuzuki/hostmcp/internal/mcp"
 )
 
 // mockMCPServer is a minimal MCP-over-SSE server used for testing HTTPBackend.
@@ -452,6 +454,96 @@ func TestHTTPBackend_RunHostTool(t *testing.T) {
 	}
 	if got != "tool output" {
 		t.Errorf("RunHostTool = %q, want %q", got, "tool output")
+	}
+}
+
+// TestHTTPBackend_RunHostTool_ClientTimeoutSeconds verifies that RunHostTool
+// forwards the CLI's --timeout value as client_timeout_seconds, so the
+// server's checkClientTimeout guard (tools_host.go) sees a caller that can
+// actually wait long enough instead of refusing the run outright.
+//
+// TestHTTPBackend_RunHostTool_ClientTimeoutSecondsは、RunHostToolがCLIの
+// --timeoutの値をclient_timeout_secondsとして転送することを検証します。
+// これにより、サーバー側のcheckClientTimeoutガード（tools_host.go）が
+// 「十分待てる呼び出し元」として認識し、実行を拒否しなくなります。
+func TestHTTPBackend_RunHostTool_ClientTimeoutSeconds(t *testing.T) {
+	originalTimeout := clientTimeout
+	defer func() { clientTimeout = originalTimeout }()
+	clientTimeout = 300
+
+	mock := newMockMCPServer(t, func(_ string, _ map[string]interface{}) string {
+		return "tool output"
+	})
+	backend := mock.newBackend()
+
+	_, err := backend.RunHostTool(context.Background(), "xcode-simulator-screenshot.sh", nil)
+	if err != nil {
+		t.Fatalf("RunHostTool returned error: %v", err)
+	}
+	if mock.LastArgs["client_timeout_seconds"] != float64(300) {
+		t.Errorf("client_timeout_seconds arg = %v, want %v", mock.LastArgs["client_timeout_seconds"], 300)
+	}
+}
+
+// TestHTTPBackend_RunHostTool_SatisfiesServerClientTimeoutCheck feeds the
+// exact arguments RunHostTool sends through mcp.CheckClientTimeoutArgs — the
+// real validation the server enforces (tools_host.go) — instead of only
+// asserting that a same-named key exists. A permissive mock that echoes
+// success unconditionally (as newMockMCPServer does above) cannot catch
+// drift between what this CLI sends and what the server actually requires;
+// this is exactly how the client_timeout_seconds regression this test
+// guards against went unnoticed. Running the real validation logic closes
+// that gap.
+//
+// TestHTTPBackend_RunHostTool_SatisfiesServerClientTimeoutCheckは、
+// RunHostToolが送る引数を、サーバーが実際に強制する検証ロジックである
+// mcp.CheckClientTimeoutArgs（tools_host.go）にそのまま通します。同名の
+// キーが存在するかだけを確認するのではありません。上のnewMockMCPServer
+// のように無条件に成功を返す寛容なモックでは、このCLIが送る内容と
+// サーバーが実際に要求する内容との乖離に気づけません——このテストが
+// 守ろうとしているclient_timeout_secondsのリグレッションも、まさにその
+// 理由で見過ごされていました。本物の検証ロジックを走らせることでその穴を
+// 塞ぎます。
+func TestHTTPBackend_RunHostTool_SatisfiesServerClientTimeoutCheck(t *testing.T) {
+	originalTimeout := clientTimeout
+	defer func() { clientTimeout = originalTimeout }()
+
+	// Stand-in for a host tool declaring "@timeout: 300" against a server
+	// whose global default is 60s — the exact shape of
+	// xcode-simulator-screenshot.sh that surfaced this bug.
+	effective := 300 * time.Second
+	globalDefault := 60 * time.Second
+
+	tests := []struct {
+		name      string
+		timeout   int
+		wantError bool
+	}{
+		{"sufficient timeout is accepted", 300, false},
+		{"insufficient timeout is refused", 30, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clientTimeout = tt.timeout
+
+			mock := newMockMCPServer(t, func(_ string, _ map[string]interface{}) string {
+				return "tool output"
+			})
+			backend := mock.newBackend()
+
+			if _, err := backend.RunHostTool(context.Background(), "xcode-simulator-screenshot.sh", nil); err != nil {
+				t.Fatalf("RunHostTool returned error: %v", err)
+			}
+
+			err := mcp.CheckClientTimeoutArgs(effective, globalDefault, mock.LastArgs)
+			if tt.wantError && err == nil {
+				t.Error("expected the server's real client-timeout check to refuse this CLI call, but it passed")
+			}
+			if !tt.wantError && err != nil {
+				t.Errorf("expected the server's real client-timeout check to accept this CLI call, got: %v", err)
+			}
+		})
 	}
 }
 

@@ -213,6 +213,22 @@ func (s *Server) checkClientTimeout(name string, args map[string]any) error {
 
 	cfg := s.hostToolsManager.Config()
 	globalDefault := time.Duration(cfg.Timeout) * time.Second
+	return CheckClientTimeoutArgs(effective, globalDefault, args)
+}
+
+// CheckClientTimeoutArgs holds the pure client_timeout_seconds validation
+// used by checkClientTimeout, split out from it (and exported) so that other
+// implementations of the run_host_tool wire contract — chiefly the CLI
+// backend's argument construction in internal/cli — can assert against this
+// same, real validation logic in their own tests instead of a hand-rolled
+// substitute that can silently drift from what the server actually enforces.
+//
+// CheckClientTimeoutArgsは、checkClientTimeoutで使われるclient_timeout_seconds
+// の純粋な検証ロジックを切り出し、exportしたものです。run_host_toolという
+// ワイヤ契約の別実装（主にinternal/cliのCLIバックエンドの引数構築）が、
+// サーバーの実際の検証と乖離しうる自前の代用品ではなく、この本物の検証
+// ロジックそのものに対して自身のテストを書けるようにするためです。
+func CheckClientTimeoutArgs(effective, globalDefault time.Duration, args map[string]any) error {
 	if effective <= globalDefault {
 		return nil
 	}

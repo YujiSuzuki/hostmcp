@@ -442,6 +442,18 @@ func (b *HTTPBackend) RunHostTool(ctx context.Context, name string, args []strin
 	if len(args) > 0 {
 		arguments["args"] = args
 	}
+	// Forward --timeout as client_timeout_seconds so the server's
+	// checkClientTimeout guard (tools_host.go) doesn't refuse tools whose
+	// declared @timeout exceeds its global default: it requires the caller
+	// to self-report a wait budget at least that large before it will start
+	// the run, and --timeout is exactly that budget for this CLI.
+	//
+	// --timeoutをclient_timeout_secondsとして転送します。サーバー側の
+	// checkClientTimeoutガード（tools_host.go）は、宣言された@timeoutが
+	// グローバル既定値を超えるツールについて、呼び出し元がその値以上の
+	// 待ち時間予算を自己申告しない限り実行を拒否します。このCLIにとって
+	// その予算はまさに--timeoutです。
+	arguments["client_timeout_seconds"] = clientTimeout
 	resp, err := b.client.CallTool("run_host_tool", arguments)
 	if err != nil {
 		return "", fmt.Errorf("failed to run host tool: %w", err)
