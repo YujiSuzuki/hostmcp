@@ -503,8 +503,14 @@ func isJapaneseLocale() bool {
 	return strings.HasPrefix(lang, "ja_JP")
 }
 
-// showDiff displays a simple line-by-line diff between two files.
-// showDiffは2つのファイル間の簡易行単位diffを表示します。
+// showDiff displays a line-by-line diff between two files. Lines are aligned
+// by longest common subsequence (LCS), not by raw line index, so a change
+// near the top of a file (e.g. inserting a paragraph into a header comment)
+// does not make every following, unchanged line falsely show up as a diff.
+// showDiffは2つのファイル間の行単位diffを表示します。行は生の行番号ではなく
+// 最長共通部分列（LCS）で整列されるため、ファイル先頭付近での変更（ヘッダー
+// コメントへの段落挿入など）があっても、それ以降の変更されていない行が
+// 誤って差分として表示されることはありません。
 func (s *SyncManager) showDiff(stagingPath, approvedPath string) {
 	stagingData, err := os.ReadFile(stagingPath)
 	if err != nil {
@@ -523,26 +529,85 @@ func (s *SyncManager) showDiff(stagingPath, approvedPath string) {
 	fmt.Fprintln(s.writer, "    --- approved (current)")
 	fmt.Fprintln(s.writer, "    +++ staging (new)")
 
-	maxLen := len(stagingLines)
-	if len(approvedLines) > maxLen {
-		maxLen = len(approvedLines)
+	for _, op := range diffLines(approvedLines, stagingLines) {
+		switch op.kind {
+		case diffRemove:
+			fmt.Fprintf(s.writer, "    - %s\n", op.line)
+		case diffAdd:
+			fmt.Fprintf(s.writer, "    + %s\n", op.line)
+		}
+	}
+}
+
+// diffOpKind identifies whether a diffOp is a removal or an addition; equal
+// lines produce no diffOp at all, since showDiff only prints actual changes.
+// diffOpKindはdiffOpが削除か追加かを識別します。一致する行はdiffOpを生成
+// しません -- showDiffは実際の変更のみを表示するためです。
+type diffOpKind int
+
+const (
+	diffRemove diffOpKind = iota
+	diffAdd
+)
+
+type diffOp struct {
+	kind diffOpKind
+	line string
+}
+
+// diffLines aligns oldLines and newLines by their longest common subsequence
+// and returns the resulting sequence of removals (from oldLines) and
+// additions (from newLines). Lines common to both are omitted, matching how
+// showDiff renders output. This mirrors the classic LCS-based line diff
+// (as used by tools like `diff`/git), computed here directly instead of
+// pulling in an external dependency for what is a small, self-contained
+// algorithm.
+// diffLinesはoldLinesとnewLinesを最長共通部分列で整列し、削除（oldLinesから）
+// と追加（newLinesから）の並びを返します。両方に共通する行は省略され、
+// showDiffの表示方法と一致します。これは`diff`/gitなどが使う古典的な
+// LCSベースの行diffと同じ考え方で、小さく自己完結したアルゴリズムのため
+// 外部依存を追加せずここで直接実装しています。
+func diffLines(oldLines, newLines []string) []diffOp {
+	n, m := len(oldLines), len(newLines)
+
+	// lcsLen[i][j] = length of the LCS of oldLines[i:] and newLines[j:].
+	// lcsLen[i][j]はoldLines[i:]とnewLines[j:]の最長共通部分列（LCS）の長さです。
+	lcsLen := make([][]int, n+1)
+	for i := range lcsLen {
+		lcsLen[i] = make([]int, m+1)
+	}
+	for i := n - 1; i >= 0; i-- {
+		for j := m - 1; j >= 0; j-- {
+			if oldLines[i] == newLines[j] {
+				lcsLen[i][j] = lcsLen[i+1][j+1] + 1
+			} else if lcsLen[i+1][j] >= lcsLen[i][j+1] {
+				lcsLen[i][j] = lcsLen[i+1][j]
+			} else {
+				lcsLen[i][j] = lcsLen[i][j+1]
+			}
+		}
 	}
 
-	for i := 0; i < maxLen; i++ {
-		var sLine, aLine string
-		if i < len(approvedLines) {
-			aLine = approvedLines[i]
-		}
-		if i < len(stagingLines) {
-			sLine = stagingLines[i]
-		}
-		if sLine != aLine {
-			if i < len(approvedLines) {
-				fmt.Fprintf(s.writer, "    - %s\n", aLine)
-			}
-			if i < len(stagingLines) {
-				fmt.Fprintf(s.writer, "    + %s\n", sLine)
-			}
+	var ops []diffOp
+	i, j := 0, 0
+	for i < n && j < m {
+		switch {
+		case oldLines[i] == newLines[j]:
+			i++
+			j++
+		case lcsLen[i+1][j] >= lcsLen[i][j+1]:
+			ops = append(ops, diffOp{kind: diffRemove, line: oldLines[i]})
+			i++
+		default:
+			ops = append(ops, diffOp{kind: diffAdd, line: newLines[j]})
+			j++
 		}
 	}
+	for ; i < n; i++ {
+		ops = append(ops, diffOp{kind: diffRemove, line: oldLines[i]})
+	}
+	for ; j < m; j++ {
+		ops = append(ops, diffOp{kind: diffAdd, line: newLines[j]})
+	}
+	return ops
 }

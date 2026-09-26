@@ -18,10 +18,10 @@ import (
 // 特殊文字やルートパスなどのエッジケースをテストします。
 func TestProjectID(t *testing.T) {
 	tests := []struct {
-		name      string
-		path      string
+		name       string
+		path       string
 		wantPrefix string
-		wantLen   int // minimum length
+		wantLen    int // minimum length
 	}{
 		{
 			name:       "simple path",
@@ -602,6 +602,51 @@ func TestSyncManager_PrintTimeoutWarning_Locale(t *testing.T) {
 				t.Errorf("expected the literal '@timeout: 900' token regardless of locale, got: %q", output)
 			}
 		})
+	}
+}
+
+// TestSyncManager_ShowDiff_OnlyShowsActualChanges verifies that showDiff aligns
+// the two files' content instead of comparing them purely by line index. Lines
+// inserted near the top of a file shift every following line's index, so a
+// naive index-by-index comparison would misreport every line after the
+// insertion point as changed even though their content is identical.
+//
+// TestSyncManager_ShowDiff_OnlyShowsActualChangesは、showDiffが単純な行番号
+// 比較ではなく、2つのファイルの内容を正しく整列させて比較することを確認します。
+// ファイル先頭付近への行の挿入は、それ以降の全行の番号をずらすため、単純な
+// 番号同士の比較では、内容が同一であっても挿入位置より後ろの全行が「変更あり」
+// と誤検出されてしまいます。
+func TestSyncManager_ShowDiff_OnlyShowsActualChanges(t *testing.T) {
+	dir := t.TempDir()
+
+	approvedLines := []string{"line1", "line2", "line3", "line4", "line5"}
+	// Two new lines inserted right after line1 -- everything from line2
+	// onward keeps its content but shifts down by two index positions.
+	stagingLines := []string{"line1", "newA", "newB", "line2", "line3", "line4", "line5"}
+
+	approvedPath := filepath.Join(dir, "approved.sh")
+	stagingPath := filepath.Join(dir, "staging.sh")
+	if err := os.WriteFile(approvedPath, []byte(strings.Join(approvedLines, "\n")), 0644); err != nil {
+		t.Fatalf("writing approved file: %v", err)
+	}
+	if err := os.WriteFile(stagingPath, []byte(strings.Join(stagingLines, "\n")), 0644); err != nil {
+		t.Fatalf("writing staging file: %v", err)
+	}
+
+	syncMgr := NewSyncManager(&config.HostToolsConfig{}, dir)
+	var out bytes.Buffer
+	syncMgr.SetWriter(&out)
+
+	syncMgr.showDiff(stagingPath, approvedPath)
+	output := out.String()
+
+	for _, unchanged := range []string{"line2", "line3", "line4", "line5"} {
+		if strings.Contains(output, "- "+unchanged) || strings.Contains(output, "+ "+unchanged) {
+			t.Errorf("unchanged line %q incorrectly shown as a diff; output:\n%s", unchanged, output)
+		}
+	}
+	if !strings.Contains(output, "+ newA") || !strings.Contains(output, "+ newB") {
+		t.Errorf("expected the two newly inserted lines to be shown as additions; output:\n%s", output)
 	}
 }
 
