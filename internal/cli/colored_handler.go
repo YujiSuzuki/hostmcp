@@ -18,14 +18,46 @@ import (
 // ANSI color codes for terminal output.
 // ターミナル出力用のANSIカラーコード。
 const (
-	colorReset  = "\033[0m"
-	colorRed    = "\033[31m"
-	colorGreen  = "\033[32m"
-	colorYellow = "\033[33m"
-	colorBlue   = "\033[34m"
-	colorCyan   = "\033[36m"
-	colorGray   = "\033[90m"
+	colorReset   = "\033[0m"
+	colorRed     = "\033[31m"
+	colorGreen   = "\033[32m"
+	colorYellow  = "\033[33m"
+	colorBlue    = "\033[34m"
+	colorCyan    = "\033[36m"
+	colorMagenta = "\033[35m"
+	colorGray    = "\033[90m"
+	styleBold    = "\033[1m"
 )
+
+// highlightAttrKey is the slog attribute key a caller sets (to true) to mark
+// a log record for extra visual emphasis in ColoredHandler. It is stripped
+// from the printed attribute list since it is a display directive, not data.
+//
+// highlightAttrKeyは、ColoredHandlerで視覚的に強調表示するためにログ発行側が
+// (trueで)設定するslog属性キーです。表示上の指示であってデータではないため、
+// 出力される属性一覧からは取り除かれます。
+const highlightAttrKey = "highlight"
+
+// stripHighlightReplaceAttr is a slog.HandlerOptions.ReplaceAttr function that
+// drops the highlightAttrKey directive from a record's attributes. It exists
+// for handlers other than ColoredHandler (e.g. slog.TextHandler, used for
+// file logging in serve.go) that have no built-in knowledge of this
+// display-only attribute and would otherwise print it verbatim. Returning a
+// zero-value slog.Attr (empty Key) is slog's documented way to omit an
+// attribute from a handler's output.
+//
+// stripHighlightReplaceAttrは、レコードの属性からhighlightAttrKeyという指示を
+// 取り除くslog.HandlerOptions.ReplaceAttr関数です。ColoredHandler以外の
+// ハンドラー（例: serve.goのファイルログで使われるslog.TextHandler）は、
+// この表示専用の属性を認識する仕組みを持たず、そのままでは文字通り出力して
+// しまうため、この関数を使います。ゼロ値のslog.Attr（空のKey）を返すことが、
+// slogにおいて属性をハンドラーの出力から除外するための正式な方法です。
+func stripHighlightReplaceAttr(_ []string, a slog.Attr) slog.Attr {
+	if a.Key == highlightAttrKey {
+		return slog.Attr{}
+	}
+	return a
+}
 
 // ColoredHandler is a slog.Handler that outputs colored log messages to terminals.
 // Colors are only applied when the output is a TTY.
@@ -85,16 +117,39 @@ func (h *ColoredHandler) Handle(_ context.Context, r slog.Record) error {
 	// レベル文字列と色を取得
 	levelStr, levelColor := h.levelInfo(r.Level)
 
+	// Scan attributes up front for the highlight directive so the message
+	// itself can be styled before the line is built. The highlight attribute
+	// is a display directive, not data, so it's excluded from the attrs
+	// appended below.
+	//
+	// 行を組み立てる前に、強調表示の指示があるかを属性から先読みします。
+	// highlight属性は表示上の指示でありデータではないため、以下で追加する
+	// 属性一覧からは除外します。
+	highlighted := false
+	r.Attrs(func(a slog.Attr) bool {
+		if a.Key == highlightAttrKey && a.Value.Kind() == slog.KindBool && a.Value.Bool() {
+			highlighted = true
+		}
+		return true
+	})
+
 	// Build the log line
 	// ログ行を構築
 	var line string
 	if h.colored {
 		// Colored output: time in gray, level in color, message in default
+		// (or bold magenta when highlighted for extra visibility)
+		//
 		// カラー出力: 時間はグレー、レベルは色付き、メッセージはデフォルト
-		line = fmt.Sprintf("%s%s%s %s%-5s%s %s",
+		// (highlightされている場合は太字マゼンタで視認性を上げる)
+		messagePrefix, messageSuffix := "", ""
+		if highlighted {
+			messagePrefix, messageSuffix = styleBold+colorMagenta, colorReset
+		}
+		line = fmt.Sprintf("%s%s%s %s%-5s%s %s%s%s",
 			colorGray, timeStr, colorReset,
 			levelColor, levelStr, colorReset,
-			r.Message,
+			messagePrefix, r.Message, messageSuffix,
 		)
 	} else {
 		// Plain output
@@ -102,9 +157,12 @@ func (h *ColoredHandler) Handle(_ context.Context, r slog.Record) error {
 		line = fmt.Sprintf("%s %-5s %s", timeStr, levelStr, r.Message)
 	}
 
-	// Append attributes
-	// 属性を追加
+	// Append attributes, skipping the highlight directive itself
+	// 属性を追加（highlightの指示自体は除く）
 	r.Attrs(func(a slog.Attr) bool {
+		if a.Key == highlightAttrKey {
+			return true
+		}
 		if h.colored {
 			line += fmt.Sprintf(" %s%s%s=%v", colorCyan, a.Key, colorReset, a.Value)
 		} else {

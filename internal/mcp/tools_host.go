@@ -159,7 +159,7 @@ func (s *Server) toolRunHostTool(ctx context.Context, args map[string]any) (any,
 		}
 	}
 
-	slog.Info("Running host tool", "name", name, "args", toolArgs)
+	slog.Info("Running host tool", "name", name, "args", toolArgs, "highlight", true)
 	result, err := s.hostToolsManager.RunTool(name, toolArgs)
 	if err != nil {
 		if strings.Contains(err.Error(), "execution timed out") {

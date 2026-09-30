@@ -309,6 +309,20 @@ func runServe(cmd *cobra.Command, args []string) error {
 		}
 		defer f.Close()
 
+		// slog.TextHandler has no concept of the ColoredHandler-only
+		// highlightAttrKey directive, so it would otherwise print it as a
+		// literal "highlight=true" attribute. Strip it here too, so it never
+		// reaches a text-formatted log file.
+		//
+		// slog.TextHandlerはColoredHandler専用の指示であるhighlightAttrKeyを
+		// 認識しないため、そのままでは"highlight=true"という無意味な属性が
+		// 文字列として出力されてしまいます。ここでも同様に取り除くことで、
+		// テキスト形式のログファイルに残らないようにします。
+		textHandlerOpts := &slog.HandlerOptions{
+			Level:       logLevel,
+			ReplaceAttr: stripHighlightReplaceAttr,
+		}
+
 		if flagLogAlsoStdout {
 			// Dual output: colored for stdout, plain text for file.
 			// Create a multi-handler that routes to both outputs.
@@ -316,13 +330,13 @@ func runServe(cmd *cobra.Command, args []string) error {
 			// デュアル出力: stdoutはカラー、ファイルはプレーンテキスト。
 			// 両方の出力にルーティングするマルチハンドラーを作成します。
 			coloredHandler := NewColoredHandler(os.Stdout, logLevel)
-			fileHandler := slog.NewTextHandler(f, &slog.HandlerOptions{Level: logLevel})
+			fileHandler := slog.NewTextHandler(f, textHandlerOpts)
 			logger := slog.New(&multiHandler{handlers: []slog.Handler{coloredHandler, fileHandler}})
 			slog.SetDefault(logger)
 		} else {
 			// File only: plain text output.
 			// ファイルのみ: プレーンテキスト出力。
-			handler := slog.NewTextHandler(f, &slog.HandlerOptions{Level: logLevel})
+			handler := slog.NewTextHandler(f, textHandlerOpts)
 			logger := slog.New(handler)
 			slog.SetDefault(logger)
 		}
